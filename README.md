@@ -1,5 +1,7 @@
 # kazura
 
+[ **English** | [日本語](docs/README.ja.md) ]
+
 Go library that simplifies difficult stateful application development with asynchronous processing, complex state transitions, and timeouts.
 
 ## Problem & Solution
@@ -199,6 +201,8 @@ See the code example at [examples/vending-machine](examples/vending-machine/main
 ## Documentation
 
 TODO
+
+- [Best Practices](docs/state-machine-best-practices.md)
 
 ## License
 
