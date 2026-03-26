@@ -255,6 +255,63 @@ func (s PouringState) Entry(machine *EntryMachine, event state.Event) {
 - When you want to transition to the next state immediately after Entry initialization
 - Use AfterEntry because calling `Trigger` directly within Entry causes re-entry issues
 
+#### Execution Order in Chained Transitions
+
+When an AfterEntry callback calls `Trigger`, the destination state's Entry executes immediately, but its AfterEntry callback does not run right away. Instead, it runs after the current AfterEntry callback finishes.
+
+Example: State A → State B → State C, where each transition is driven by AfterEntry:
+
+```
+1. State A: Entry              — registers AfterEntry callback X
+2. callback X runs             — calls Trigger(event1)
+3.   State B: Exit → State C: Entry   — registers AfterEntry callback Y
+4.   callback X continues      — remaining code after Trigger(event1)
+5. callback Y runs             — State C's AfterEntry
+```
+
+Between State C's Entry (step 3) and its AfterEntry callback Y (step 5), the remaining code of callback X (step 4) runs.
+
+```mermaid
+sequenceDiagram
+    participant a as Caller
+    participant m as StateMachine
+    participant sA as State A
+    participant sC as State C
+
+    a ->> m: Trigger(event)
+    activate m
+
+    m ->> sA: Entry
+    activate sA
+    Note over sA: registers AfterEntry callback X
+    sA -->> m: done
+    deactivate sA
+
+    m ->> sA: callback X
+    activate sA
+    Note over sA: calls Trigger(event1)
+
+    m ->> sC: Entry
+    activate sC
+    Note over sC: registers AfterEntry callback Y
+    sC -->> m: done
+    deactivate sC
+
+    Note over sA: remaining code of callback X
+    sA -->> m: done
+    deactivate sA
+
+    m ->> sC: callback Y
+    activate sC
+    sC -->> m: done
+    deactivate sC
+
+    m -->> a: done
+    deactivate m
+```
+
+**Key Point**: If your AfterEntry callback has no code after the `Trigger` call (which is the typical pattern), this ordering has no practical effect. It only matters if you have logic after `Trigger` in the same callback.
+
 ### Dispatcher Selection
 
 Choose a Dispatcher based on your state machine use case.
