@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/raiich/kazura/task"
+	"github.com/raiich/kazura/task/internal"
 )
 
 // Dispatcher is used to execute Task sequentially in same goroutine of caller, using sync.Mutex.
@@ -49,17 +50,27 @@ func (d *Dispatcher) safeExec(f func()) {
 // Unlike time.AfterFunc which executes in a separate goroutine, this method
 // executes f synchronously in the goroutine that scheduled the timer, protected by sync.Mutex.
 // This ensures sequential execution of all scheduled functions without race conditions.
-// Returns a Timer that can be used to cancel the scheduled execution.
+//
+// See [task.Timer.Stop] for Stop semantics.
 func (d *Dispatcher) AfterFunc(duration time.Duration, f func()) task.Timer {
-	return time.AfterFunc(duration, func() {
+	t := &internal.DispatcherTimer{}
+	t.Inner = time.AfterFunc(duration, func() {
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		// Skip execution if dispatcher has been terminated due to a previous panic
+
+		// Skip execution if dispatcher has been terminated due to a previous panic.
+		//
+		// When ended, we skip TryFire and return early. This leaves doNotFire
+		// as false, so a subsequent Stop() will return true. This is harmless
+		// because no callbacks will ever execute after the dispatcher has ended.
 		if d.ended {
 			return
 		}
-		d.safeExec(f)
+		t.TryFire(func() {
+			d.safeExec(f)
+		})
 	})
+	return t
 }
 
 // NewDispatcher creates a new Dispatcher that uses sync.Mutex for task serialization.

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/raiich/kazura/task"
+	"github.com/raiich/kazura/task/internal"
 )
 
 // Dispatcher executes Task sequentially in run loop in Serve method.
@@ -45,17 +46,22 @@ func (d *Dispatcher) safeExec(nextTask func()) (err error) {
 }
 
 // AfterFunc enqueues f to TaskQueue after specified duration.
+//
+// See [task.Timer.Stop] for Stop semantics.
 func (d *Dispatcher) AfterFunc(duration time.Duration, f func()) task.Timer {
-	return time.AfterFunc(duration, func() {
-		// enqueue task to execute task in same goroutine with Serve loop
+	t := &internal.DispatcherTimer{}
+	t.Inner = time.AfterFunc(duration, func() {
 		select {
 		case <-d.ctx.Done():
 			// give up to enqueue
 			return
-		case d.queue <- f:
+		case d.queue <- func() {
+			t.TryFire(f)
+		}:
 			return
 		}
 	})
+	return t
 }
 
 // NewDispatcher creates a new Dispatcher with the given parent context and options.
