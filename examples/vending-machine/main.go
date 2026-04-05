@@ -9,6 +9,7 @@ import (
 	"github.com/raiich/kazura/must"
 	"github.com/raiich/kazura/state"
 	"github.com/raiich/kazura/state/graph"
+	"github.com/raiich/kazura/task"
 	"github.com/raiich/kazura/task/eventloop"
 )
 
@@ -98,7 +99,7 @@ type DoneEvent string
 // VendingMachine holds the machine's state data.
 type VendingMachine struct {
 	Coins      int
-	Dispatcher state.Dispatcher
+	Dispatcher task.Dispatcher
 }
 
 func main() {

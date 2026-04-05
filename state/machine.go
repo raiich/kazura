@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/raiich/kazura/state/graph"
+	"github.com/raiich/kazura/task"
 )
 
 var errMethodNotCallable = fmt.Errorf("method is not callable here")
@@ -226,7 +227,7 @@ func (m *Machine[S, T]) CurrentState() (S, error) {
 	return currentNode.State, nil
 }
 
-func (m *Machine[S, T]) doAfterFunc(dispatcher Dispatcher, d time.Duration, callback func(machine *AfterFuncMachine[T])) {
+func (m *Machine[S, T]) doAfterFunc(dispatcher task.Dispatcher, d time.Duration, callback func(machine *AfterFuncMachine[T])) {
 	switch m.context {
 	default:
 		// ok
@@ -322,7 +323,7 @@ func (m *EntryMachine[T]) Value() T {
 // AfterFunc schedules a callback to be executed after the specified duration.
 // The callback will be canceled if the state changes before the timer fires.
 // The dispatcher parameter is used to schedule the timer execution.
-func (m *EntryMachine[T]) AfterFunc(dispatcher Dispatcher, d time.Duration, callback func(machine *AfterFuncMachine[T])) {
+func (m *EntryMachine[T]) AfterFunc(dispatcher task.Dispatcher, d time.Duration, callback func(machine *AfterFuncMachine[T])) {
 	m.machine.doAfterFunc(dispatcher, d, callback)
 }
 
@@ -350,7 +351,7 @@ func (m *AfterFuncMachine[T]) Value() T {
 
 // AfterFunc schedules another callback to be executed after the specified duration.
 // The dispatcher parameter is used to schedule the timer execution.
-func (m *AfterFuncMachine[T]) AfterFunc(dispatcher Dispatcher, d time.Duration, callback func(machine *AfterFuncMachine[T])) {
+func (m *AfterFuncMachine[T]) AfterFunc(dispatcher task.Dispatcher, d time.Duration, callback func(machine *AfterFuncMachine[T])) {
 	m.machine.doAfterFunc(dispatcher, d, callback)
 }
 
@@ -384,7 +385,7 @@ func (m *ExitMachine[T]) Value() T {
 
 type stateMachine[T any] interface {
 	Value() T
-	doAfterFunc(dispatcher Dispatcher, d time.Duration, callback func(machine *AfterFuncMachine[T]))
+	doAfterFunc(dispatcher task.Dispatcher, d time.Duration, callback func(machine *AfterFuncMachine[T]))
 	doAfterEntry(callback func(machine *AfterEntryMachine[T])) error
 	triggerFromAfterFunc(event Event) error
 	triggerFromAfterEntry(event Event) error

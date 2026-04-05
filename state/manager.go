@@ -1,6 +1,10 @@
 package state
 
-import "time"
+import (
+	"time"
+
+	"github.com/raiich/kazura/task"
+)
 
 // Manager manages a single state value with support for timer-based operations.
 // It supports multiple timers and automatically cancels all timers when the state changes.
@@ -29,7 +33,7 @@ func (m *Manager[S]) Set(next S) {
 
 // AfterFunc schedules a function to execute after the specified duration.
 // The function will not execute if the state changes before the timer fires.
-func (m *Manager[S]) AfterFunc(dispatcher Dispatcher, d time.Duration, f func()) {
+func (m *Manager[S]) AfterFunc(dispatcher task.Dispatcher, d time.Duration, f func()) {
 	m.timers.AfterFunc(dispatcher, d, f)
 }
 

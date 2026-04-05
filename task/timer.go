@@ -6,11 +6,10 @@ type Timer interface {
 	// the call successfully prevents execution, false if the function has
 	// already been executed or Stop has already been called.
 	//
-	// In dispatcher-based implementations, Stop returns true as long as the
-	// dispatched function has not yet been executed by the dispatcher, even if
-	// the underlying [time.AfterFunc] has already fired. This is because the
-	// dispatcher serializes execution — if the callback is waiting to be
-	// dispatched, Stop called from within a dispatched task can still prevent it.
+	// Unlike [time.Timer.Stop], Stop returns true as long as the function has
+	// not yet been executed by the [Dispatcher], even if the timer's duration
+	// has already elapsed. This means Stop called from within a dispatched
+	// callback can still cancel a pending function.
 	//
 	// Stop is safe for concurrent use.
 	Stop() bool

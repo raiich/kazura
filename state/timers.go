@@ -13,7 +13,7 @@ type timerGroup struct {
 
 // AfterFunc schedules a function to execute after the specified duration.
 // The function will not execute if Clear is called before the timer fires.
-func (m *timerGroup) AfterFunc(dispatcher Dispatcher, d time.Duration, f func()) {
+func (m *timerGroup) AfterFunc(dispatcher task.Dispatcher, d time.Duration, f func()) {
 	entry := &timerEntry{}
 	entry.timer = dispatcher.AfterFunc(d, func() {
 		f()

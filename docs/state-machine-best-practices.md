@@ -25,12 +25,15 @@ Define project-specific type aliases to make the state machine easier to use.
 ```go
 package main
 
-import "github.com/raiich/kazura/state"
+import (
+    "github.com/raiich/kazura/state"
+    "github.com/raiich/kazura/task"
+)
 
 // Data type definition
 type VendingMachine struct {
     Coins      int
-    Dispatcher state.Dispatcher
+    Dispatcher task.Dispatcher
 }
 
 // Type aliases (omit verbose type parameters)

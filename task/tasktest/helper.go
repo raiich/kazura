@@ -1,11 +1,11 @@
-package queue
+package tasktest
 
 import (
 	"testing"
 	"testing/synctest"
 )
 
-// withSyncTest wraps a test function with synctest.Test, recovering from deadlock
+// WithSyncTest wraps a test function with synctest.Test, recovering from deadlock
 // panics and converting them to test failures, allowing subsequent tests to continue.
 //
 // This prevents a single deadlock bug from stopping the entire test suite.
@@ -14,10 +14,10 @@ import (
 //
 // Usage:
 //
-//	t.Run("test description", withSyncTest(func(t *testing.T) {
+//	t.Run("test description", WithSyncTest(func(t *testing.T) {
 //	    // Your synctest code here
 //	}))
-func withSyncTest(f func(t *testing.T)) func(t *testing.T) {
+func WithSyncTest(f func(t *testing.T)) func(t *testing.T) {
 	return func(t *testing.T) {
 		t.Helper()
 		defer func() {
