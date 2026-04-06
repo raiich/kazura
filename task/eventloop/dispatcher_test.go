@@ -13,12 +13,11 @@ import (
 func TestDispatcher(t *testing.T) {
 	tasktest.TestDispatcher(t, func(t *testing.T, f func(t *testing.T, d task.Dispatcher, h *tasktest.TestHelper)) {
 		start := time.Unix(0, 0)
-		current := start
 		dispatcher := NewDispatcher(start)
 		f(t, dispatcher, &tasktest.TestHelper{
-			Advance: func(dur time.Duration) error {
-				current = current.Add(dur)
-				return dispatcher.FastForward(current)
+			Start: start,
+			AdvanceToFunc: func(to time.Time) error {
+				return dispatcher.FastForward(to)
 			},
 		})
 	})

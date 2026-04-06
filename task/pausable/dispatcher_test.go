@@ -13,25 +13,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newPausableTest() (*Dispatcher, *tasktest.TestHelper) {
-	baseTime := time.Unix(0, 0)
-	currentTime := baseTime
-	base := eventloop.NewDispatcher(baseTime)
-	d := NewDispatcher(base, func() time.Time { return currentTime })
-	h := &tasktest.TestHelper{
-		Advance: func(dur time.Duration) error {
-			currentTime = currentTime.Add(dur)
-			return base.FastForward(currentTime)
-		},
-	}
-	return d, h
-}
-
 func TestDispatcher(t *testing.T) {
 	tasktest.TestDispatcher(t, func(t *testing.T, f func(t *testing.T, d task.Dispatcher, h *tasktest.TestHelper)) {
-		d, h := newPausableTest()
-		f(t, d, h)
+		start := time.Unix(0, 0)
+		base := eventloop.NewDispatcher(start)
+		currentTime := start
+		d := NewDispatcher(base, func() time.Time { return currentTime })
+		f(t, d, &tasktest.TestHelper{
+			Start: start,
+			AdvanceToFunc: func(to time.Time) error {
+				currentTime = to
+				return base.FastForward(to)
+			},
+		})
 	})
+}
+
+// pausableHelper provides duration-based Advance for pausable-specific tests.
+type pausableHelper struct {
+	currentTime time.Time
+	dispatcher  *eventloop.Dispatcher
+}
+
+func (h *pausableHelper) Advance(d time.Duration) error {
+	h.currentTime = h.currentTime.Add(d)
+	return h.dispatcher.FastForward(h.currentTime)
+}
+
+func newPausableTest() (*Dispatcher, *pausableHelper) {
+	baseTime := time.Unix(0, 0)
+	base := eventloop.NewDispatcher(baseTime)
+	h := &pausableHelper{currentTime: baseTime, dispatcher: base}
+	d := NewDispatcher(base, func() time.Time { return h.currentTime })
+	return d, h
 }
 
 func TestTimer_Stop_DuringPause(t *testing.T) {

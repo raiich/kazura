@@ -13,9 +13,15 @@ import (
 
 // TestHelper provides test-specific time control for Dispatcher conformance tests.
 type TestHelper struct {
-	// Advance moves time forward by d and ensures all tasks up to that point execute.
+	// Start is the initial time of the test dispatcher.
+	Start time.Time
+	// AdvanceToFunc moves time forward to the given absolute time and ensures all tasks up to that point execute.
 	// Returns an error if a dispatched function panicked (for eventloop-style dispatchers).
-	Advance func(d time.Duration) error
+	AdvanceToFunc func(to time.Time) error
+}
+
+func (h *TestHelper) AdvanceTo(to time.Time) error {
+	return h.AdvanceToFunc(to)
 }
 
 // RunFunc creates a Dispatcher, wraps the test with synctest if needed, and calls f.
@@ -64,9 +70,9 @@ func testAfterFunc(t *testing.T, run RunFunc) {
 			d.AfterFunc(5*time.Millisecond, func() {
 				actual.Add(1)
 			})
-			require.NoError(t, h.Advance(5*time.Millisecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(5*time.Millisecond)))
 			assert.Equal(t, int32(1), actual.Load())
-			require.NoError(t, h.Advance(50*time.Millisecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(55*time.Millisecond)))
 			assert.Equal(t, int32(1), actual.Load(), "function should execute exactly once")
 		})
 	})
@@ -80,7 +86,7 @@ func testTimerStop(t *testing.T, run RunFunc) {
 				actual.Store(true)
 			})
 			assert.True(t, timer.Stop(), "Stop() should return true when stopping before execution")
-			require.NoError(t, h.Advance(50*time.Millisecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(50*time.Millisecond)))
 			assert.False(t, actual.Load(), "function should not execute after being stopped")
 		})
 	})
@@ -91,7 +97,7 @@ func testTimerStop(t *testing.T, run RunFunc) {
 			timer := d.AfterFunc(1*time.Millisecond, func() {
 				actual.Add(1)
 			})
-			require.NoError(t, h.Advance(1*time.Millisecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(1*time.Millisecond)))
 			assert.False(t, timer.Stop(), "Stop() should return false when stopping after execution")
 			assert.Equal(t, int32(1), actual.Load(), "function should execute exactly once")
 		})
@@ -106,7 +112,7 @@ func testTimerStop(t *testing.T, run RunFunc) {
 			assert.True(t, timer.Stop(), "first Stop() should return true")
 			assert.False(t, timer.Stop(), "second Stop() should return false")
 			assert.False(t, timer.Stop(), "third Stop() should return false")
-			require.NoError(t, h.Advance(50*time.Millisecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(50*time.Millisecond)))
 			assert.False(t, actual.Load(), "function should not execute after being stopped")
 		})
 	})
@@ -121,7 +127,7 @@ func testTimerStop(t *testing.T, run RunFunc) {
 			d.AfterFunc(100*time.Millisecond, func() {
 				stopResult.Store(target.Stop())
 			})
-			require.NoError(t, h.Advance(500*time.Millisecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(500*time.Millisecond)))
 			assert.True(t, stopResult.Load(), "Stop() from callback should return true")
 			assert.False(t, targetExecuted.Load(), "stopped timer should not execute")
 		})
@@ -142,19 +148,19 @@ func testMultipleTimers(t *testing.T, run RunFunc) {
 			d.AfterFunc(10*time.Millisecond, func() { v |= bit1; actual.Store(v) })
 			d.AfterFunc(20*time.Millisecond, func() { v |= bit2; actual.Store(v) })
 
-			require.NoError(t, h.Advance(10*time.Millisecond-1*time.Nanosecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(10*time.Millisecond-1)))
 			assert.Equal(t, int32(0), actual.Load(), "no function should have fired yet")
 
-			require.NoError(t, h.Advance(1*time.Nanosecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(10*time.Millisecond)))
 			assert.Equal(t, int32(bit1), actual.Load(), "only first should have fired")
 
-			require.NoError(t, h.Advance(10*time.Millisecond-1*time.Nanosecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(20*time.Millisecond-1)))
 			assert.Equal(t, int32(bit1), actual.Load(), "still only first")
 
-			require.NoError(t, h.Advance(1*time.Nanosecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(20*time.Millisecond)))
 			assert.Equal(t, int32(bit1|bit2), actual.Load(), "first and second should have fired")
 
-			require.NoError(t, h.Advance(10*time.Millisecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(30*time.Millisecond)))
 			assert.Equal(t, int32(bit1|bit2|bit3), actual.Load(), "all should have fired")
 		})
 	})
@@ -171,7 +177,7 @@ func testMultipleTimers(t *testing.T, run RunFunc) {
 				counter += 3
 				actual.Store(counter)
 			})
-			require.NoError(t, h.Advance(10*time.Millisecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(10*time.Millisecond)))
 			assert.Equal(t, int32(5), actual.Load(), "counter should be 5 (sequential execution, no race conditions)")
 		})
 	})
@@ -185,7 +191,7 @@ func testEdgeCases(t *testing.T, run RunFunc) {
 				actual.Store(true)
 			})
 			require.NotNil(t, timer, "Timer should be returned even for zero duration")
-			require.NoError(t, h.Advance(0))
+			require.NoError(t, h.AdvanceTo(h.Start))
 			assert.True(t, actual.Load(), "function should execute for zero duration")
 		})
 	})
@@ -197,7 +203,7 @@ func testEdgeCases(t *testing.T, run RunFunc) {
 				actual.Store(true)
 			})
 			require.NotNil(t, timer, "Timer should be returned even for negative duration")
-			require.NoError(t, h.Advance(0))
+			require.NoError(t, h.AdvanceTo(h.Start))
 			assert.True(t, actual.Load(), "function should execute for negative duration")
 		})
 	})
@@ -217,7 +223,7 @@ func testPanic(t *testing.T, run RunFunc) {
 			d.AfterFunc(5*time.Millisecond, func() {
 				panic("boom")
 			})
-			err := h.Advance(5 * time.Millisecond)
+			err := h.AdvanceTo(h.Start.Add(5 * time.Millisecond))
 			assert.ErrorContains(t, err, "panic: boom")
 		})
 	})
@@ -231,7 +237,7 @@ func testPanic(t *testing.T, run RunFunc) {
 			d.AfterFunc(200*time.Millisecond, func() {
 				subsequent.Store(true)
 			})
-			err := h.Advance(200 * time.Millisecond)
+			err := h.AdvanceTo(h.Start.Add(200 * time.Millisecond))
 			assert.ErrorContains(t, err, "panic: boom")
 			assert.False(t, subsequent.Load(), "subsequent task should not execute after panic")
 		})
@@ -245,7 +251,7 @@ func testPanic(t *testing.T, run RunFunc) {
 			d.AfterFunc(10*time.Millisecond, func() {
 				panic("second panic")
 			})
-			err := h.Advance(10 * time.Millisecond)
+			err := h.AdvanceTo(h.Start.Add(10 * time.Millisecond))
 			assert.ErrorContains(t, err, "panic: first panic")
 		})
 	})
@@ -253,7 +259,7 @@ func testPanic(t *testing.T, run RunFunc) {
 	t.Run("nil function", func(t *testing.T) {
 		run(t, func(t *testing.T, d task.Dispatcher, h *TestHelper) {
 			d.AfterFunc(5*time.Millisecond, nil)
-			assert.Error(t, h.Advance(5*time.Millisecond))
+			assert.Error(t, h.AdvanceTo(h.Start.Add(5*time.Millisecond)))
 		})
 	})
 
@@ -262,7 +268,7 @@ func testPanic(t *testing.T, run RunFunc) {
 			d.AfterFunc(5*time.Millisecond, func() {
 				panic(nil)
 			})
-			err := h.Advance(5 * time.Millisecond)
+			err := h.AdvanceTo(h.Start.Add(5 * time.Millisecond))
 			assert.ErrorContains(t, err, "panic: panic called with nil argument")
 		})
 	})
@@ -272,7 +278,7 @@ func testPanic(t *testing.T, run RunFunc) {
 			d.AfterFunc(5*time.Millisecond, func() {
 				panic("text")
 			})
-			err := h.Advance(5 * time.Millisecond)
+			err := h.AdvanceTo(h.Start.Add(5 * time.Millisecond))
 			assert.ErrorContains(t, err, "panic: text")
 		})
 	})
@@ -282,7 +288,7 @@ func testPanic(t *testing.T, run RunFunc) {
 			d.AfterFunc(5*time.Millisecond, func() {
 				panic(42)
 			})
-			err := h.Advance(5 * time.Millisecond)
+			err := h.AdvanceTo(h.Start.Add(5 * time.Millisecond))
 			assert.ErrorContains(t, err, "panic: 42")
 		})
 	})
@@ -303,7 +309,7 @@ func testSelectiveStop(t *testing.T, run RunFunc) {
 			d.AfterFunc(30*time.Millisecond, func() { v |= bitC; actual.Store(v) })
 
 			assert.True(t, timerB.Stop(), "Stop() should return true for pending timer")
-			require.NoError(t, h.Advance(30*time.Millisecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(30*time.Millisecond)))
 			assert.Equal(t, int32(bitA|bitC), actual.Load(), "A and C should execute, B should be stopped")
 		})
 	})
@@ -316,10 +322,10 @@ func testTimingBoundary(t *testing.T, run RunFunc) {
 			d.AfterFunc(100*time.Millisecond, func() {
 				actual.Store(true)
 			})
-			require.NoError(t, h.Advance(99*time.Millisecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(99*time.Millisecond)))
 			assert.False(t, actual.Load(), "should not fire at delay-1")
 
-			require.NoError(t, h.Advance(1*time.Millisecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(100*time.Millisecond)))
 			assert.True(t, actual.Load(), "should fire at exact delay")
 		})
 	})
@@ -330,15 +336,15 @@ func testDelayedRegistration(t *testing.T, run RunFunc) {
 		run(t, func(t *testing.T, d task.Dispatcher, h *TestHelper) {
 			var actual atomic.Bool
 
-			require.NoError(t, h.Advance(50*time.Millisecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(50*time.Millisecond)))
 			d.AfterFunc(10*time.Millisecond, func() {
 				actual.Store(true)
 			})
 
-			require.NoError(t, h.Advance(9*time.Millisecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(59*time.Millisecond)))
 			assert.False(t, actual.Load(), "should not fire before relative delay")
 
-			require.NoError(t, h.Advance(1*time.Millisecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(60*time.Millisecond)))
 			assert.True(t, actual.Load(), "should fire at relative delay")
 		})
 	})
@@ -362,7 +368,7 @@ func testNestedScheduling(t *testing.T, run RunFunc) {
 				})
 			})
 
-			require.NoError(t, h.Advance(30*time.Millisecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(30*time.Millisecond)))
 			assert.Equal(t, int32(bit1|bit2), actual.Load(), "both callbacks should have fired")
 		})
 	})
@@ -391,7 +397,7 @@ func testConcurrency(t *testing.T, run RunFunc) {
 			}
 			wg.Wait()
 
-			require.NoError(t, h.Advance(10*time.Millisecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(10*time.Millisecond)))
 			assert.Equal(t, int32(numGoroutines/2), actual.Load(), "half of tasks should execute")
 		})
 	})
@@ -419,7 +425,7 @@ func testConcurrency(t *testing.T, run RunFunc) {
 			wg.Wait()
 
 			assert.Equal(t, int32(1), successfulStops.Load(), "only one Stop() should succeed")
-			require.NoError(t, h.Advance(100*time.Millisecond))
+			require.NoError(t, h.AdvanceTo(h.Start.Add(100*time.Millisecond)))
 			assert.False(t, actual.Load(), "function should not execute after being stopped")
 		})
 	})

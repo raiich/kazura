@@ -14,8 +14,11 @@ func TestDispatcher(t *testing.T) {
 		tasktest.WithSyncTest(func(t *testing.T) {
 			dispatcher := NewDispatcher()
 			f(t, dispatcher, &tasktest.TestHelper{
-				Advance: func(dur time.Duration) error {
-					time.Sleep(dur)
+				Start: time.Now(),
+				AdvanceToFunc: func(to time.Time) error {
+					if dur := time.Until(to); dur > 0 {
+						time.Sleep(dur)
+					}
 					synctest.Wait()
 					return dispatcher.ExtractError()
 				},
@@ -23,4 +26,3 @@ func TestDispatcher(t *testing.T) {
 		})(t)
 	})
 }
-
