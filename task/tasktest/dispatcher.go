@@ -40,33 +40,34 @@ func TestDispatcher(t *testing.T, run RunFunc) {
 	t.Run("Panic", func(t *testing.T) {
 		testPanic(t, run)
 	})
+	t.Run("SelectiveStop", func(t *testing.T) {
+		testSelectiveStop(t, run)
+	})
+	t.Run("TimingBoundary", func(t *testing.T) {
+		testTimingBoundary(t, run)
+	})
+	t.Run("DelayedRegistration", func(t *testing.T) {
+		testDelayedRegistration(t, run)
+	})
+	t.Run("NestedScheduling", func(t *testing.T) {
+		testNestedScheduling(t, run)
+	})
 	t.Run("Concurrency", func(t *testing.T) {
 		testConcurrency(t, run)
 	})
 }
 
 func testAfterFunc(t *testing.T, run RunFunc) {
-	t.Run("executes function", func(t *testing.T) {
-		run(t, func(t *testing.T, d task.Dispatcher, h *TestHelper) {
-			executed := false
-			d.AfterFunc(5*time.Millisecond, func() {
-				executed = true
-			})
-			require.NoError(t, h.Advance(5*time.Millisecond))
-			assert.True(t, executed, "function should be executed")
-		})
-	})
-
 	t.Run("executes once", func(t *testing.T) {
 		run(t, func(t *testing.T, d task.Dispatcher, h *TestHelper) {
-			count := 0
+			var actual atomic.Int32
 			d.AfterFunc(5*time.Millisecond, func() {
-				count++
+				actual.Add(1)
 			})
 			require.NoError(t, h.Advance(5*time.Millisecond))
-			assert.Equal(t, 1, count)
+			assert.Equal(t, int32(1), actual.Load())
 			require.NoError(t, h.Advance(50*time.Millisecond))
-			assert.Equal(t, 1, count, "function should execute exactly once")
+			assert.Equal(t, int32(1), actual.Load(), "function should execute exactly once")
 		})
 	})
 }
@@ -74,55 +75,55 @@ func testAfterFunc(t *testing.T, run RunFunc) {
 func testTimerStop(t *testing.T, run RunFunc) {
 	t.Run("before execution", func(t *testing.T) {
 		run(t, func(t *testing.T, d task.Dispatcher, h *TestHelper) {
-			executed := false
+			var actual atomic.Bool
 			timer := d.AfterFunc(20*time.Millisecond, func() {
-				executed = true
+				actual.Store(true)
 			})
 			assert.True(t, timer.Stop(), "Stop() should return true when stopping before execution")
 			require.NoError(t, h.Advance(50*time.Millisecond))
-			assert.False(t, executed, "function should not execute after being stopped")
+			assert.False(t, actual.Load(), "function should not execute after being stopped")
 		})
 	})
 
 	t.Run("after execution", func(t *testing.T) {
 		run(t, func(t *testing.T, d task.Dispatcher, h *TestHelper) {
-			count := 0
+			var actual atomic.Int32
 			timer := d.AfterFunc(1*time.Millisecond, func() {
-				count++
+				actual.Add(1)
 			})
 			require.NoError(t, h.Advance(1*time.Millisecond))
 			assert.False(t, timer.Stop(), "Stop() should return false when stopping after execution")
-			assert.Equal(t, 1, count, "function should execute exactly once")
+			assert.Equal(t, int32(1), actual.Load(), "function should execute exactly once")
 		})
 	})
 
 	t.Run("multiple calls", func(t *testing.T) {
 		run(t, func(t *testing.T, d task.Dispatcher, h *TestHelper) {
-			executed := false
+			var actual atomic.Bool
 			timer := d.AfterFunc(20*time.Millisecond, func() {
-				executed = true
+				actual.Store(true)
 			})
 			assert.True(t, timer.Stop(), "first Stop() should return true")
 			assert.False(t, timer.Stop(), "second Stop() should return false")
 			assert.False(t, timer.Stop(), "third Stop() should return false")
 			require.NoError(t, h.Advance(50*time.Millisecond))
-			assert.False(t, executed, "function should not execute after being stopped")
+			assert.False(t, actual.Load(), "function should not execute after being stopped")
 		})
 	})
 
 	t.Run("stop from callback", func(t *testing.T) {
 		run(t, func(t *testing.T, d task.Dispatcher, h *TestHelper) {
-			targetExecuted := false
-			var stopResult bool
+			var targetExecuted atomic.Bool
+			var stopResult atomic.Bool
 			target := d.AfterFunc(500*time.Millisecond, func() {
-				targetExecuted = true
+				targetExecuted.Store(true)
 			})
 			d.AfterFunc(100*time.Millisecond, func() {
-				stopResult = target.Stop()
+				stopResult.Store(target.Stop())
 			})
 			require.NoError(t, h.Advance(500*time.Millisecond))
-			assert.True(t, stopResult, "Stop() from callback should return true")
-			assert.False(t, targetExecuted, "stopped timer should not execute")
+			assert.True(t, stopResult.Load(), "Stop() from callback should return true")
+			assert.False(t, targetExecuted.Load(), "stopped timer should not execute")
 		})
 	})
 }
@@ -130,32 +131,48 @@ func testTimerStop(t *testing.T, run RunFunc) {
 func testMultipleTimers(t *testing.T, run RunFunc) {
 	t.Run("different delays", func(t *testing.T) {
 		run(t, func(t *testing.T, d task.Dispatcher, h *TestHelper) {
-			var order []int
-			d.AfterFunc(30*time.Millisecond, func() {
-				order = append(order, 3)
-			})
-			d.AfterFunc(10*time.Millisecond, func() {
-				order = append(order, 1)
-			})
-			d.AfterFunc(20*time.Millisecond, func() {
-				order = append(order, 2)
-			})
-			require.NoError(t, h.Advance(30*time.Millisecond))
-			assert.Equal(t, []int{1, 2, 3}, order, "functions should execute in order of their delays")
+			const (
+				bit1 = 1 << iota
+				bit2
+				bit3
+			)
+			var v int32
+			var actual atomic.Int32 // for assertion
+			d.AfterFunc(30*time.Millisecond, func() { v |= bit3; actual.Store(v) })
+			d.AfterFunc(10*time.Millisecond, func() { v |= bit1; actual.Store(v) })
+			d.AfterFunc(20*time.Millisecond, func() { v |= bit2; actual.Store(v) })
+
+			require.NoError(t, h.Advance(10*time.Millisecond-1*time.Nanosecond))
+			assert.Equal(t, int32(0), actual.Load(), "no function should have fired yet")
+
+			require.NoError(t, h.Advance(1*time.Nanosecond))
+			assert.Equal(t, int32(bit1), actual.Load(), "only first should have fired")
+
+			require.NoError(t, h.Advance(10*time.Millisecond-1*time.Nanosecond))
+			assert.Equal(t, int32(bit1), actual.Load(), "still only first")
+
+			require.NoError(t, h.Advance(1*time.Nanosecond))
+			assert.Equal(t, int32(bit1|bit2), actual.Load(), "first and second should have fired")
+
+			require.NoError(t, h.Advance(10*time.Millisecond))
+			assert.Equal(t, int32(bit1|bit2|bit3), actual.Load(), "all should have fired")
 		})
 	})
 
 	t.Run("sequential execution", func(t *testing.T) {
 		run(t, func(t *testing.T, d task.Dispatcher, h *TestHelper) {
-			counter := 0
+			var counter int32
+			var actual atomic.Int32 // for assertion
 			d.AfterFunc(10*time.Millisecond, func() {
 				counter += 2
+				actual.Store(counter)
 			})
 			d.AfterFunc(10*time.Millisecond, func() {
 				counter += 3
+				actual.Store(counter)
 			})
 			require.NoError(t, h.Advance(10*time.Millisecond))
-			assert.Equal(t, 5, counter, "counter should be 5 (sequential execution, no race conditions)")
+			assert.Equal(t, int32(5), actual.Load(), "counter should be 5 (sequential execution, no race conditions)")
 		})
 	})
 }
@@ -163,25 +180,25 @@ func testMultipleTimers(t *testing.T, run RunFunc) {
 func testEdgeCases(t *testing.T, run RunFunc) {
 	t.Run("zero duration", func(t *testing.T) {
 		run(t, func(t *testing.T, d task.Dispatcher, h *TestHelper) {
-			executed := false
+			var actual atomic.Bool
 			timer := d.AfterFunc(0, func() {
-				executed = true
+				actual.Store(true)
 			})
 			require.NotNil(t, timer, "Timer should be returned even for zero duration")
 			require.NoError(t, h.Advance(0))
-			assert.True(t, executed, "function should execute for zero duration")
+			assert.True(t, actual.Load(), "function should execute for zero duration")
 		})
 	})
 
 	t.Run("negative duration", func(t *testing.T) {
 		run(t, func(t *testing.T, d task.Dispatcher, h *TestHelper) {
-			executed := false
+			var actual atomic.Bool
 			timer := d.AfterFunc(-time.Second, func() {
-				executed = true
+				actual.Store(true)
 			})
 			require.NotNil(t, timer, "Timer should be returned even for negative duration")
 			require.NoError(t, h.Advance(0))
-			assert.True(t, executed, "function should execute for negative duration")
+			assert.True(t, actual.Load(), "function should execute for negative duration")
 		})
 	})
 
@@ -207,16 +224,16 @@ func testPanic(t *testing.T, run RunFunc) {
 
 	t.Run("subsequent task not executed", func(t *testing.T) {
 		run(t, func(t *testing.T, d task.Dispatcher, h *TestHelper) {
-			normalExecuted := false
+			var subsequent atomic.Bool
 			d.AfterFunc(100*time.Millisecond, func() {
 				panic("boom")
 			})
 			d.AfterFunc(200*time.Millisecond, func() {
-				normalExecuted = true
+				subsequent.Store(true)
 			})
 			err := h.Advance(200 * time.Millisecond)
 			assert.ErrorContains(t, err, "panic: boom")
-			assert.False(t, normalExecuted, "subsequent task should not execute after panic")
+			assert.False(t, subsequent.Load(), "subsequent task should not execute after panic")
 		})
 	})
 
@@ -271,11 +288,92 @@ func testPanic(t *testing.T, run RunFunc) {
 	})
 }
 
+func testSelectiveStop(t *testing.T, run RunFunc) {
+	t.Run("stopping one timer does not affect others", func(t *testing.T) {
+		run(t, func(t *testing.T, d task.Dispatcher, h *TestHelper) {
+			const (
+				bitA = 1 << iota
+				bitB
+				bitC
+			)
+			var v int32
+			var actual atomic.Int32 // for assertion
+			d.AfterFunc(10*time.Millisecond, func() { v |= bitA; actual.Store(v) })
+			timerB := d.AfterFunc(20*time.Millisecond, func() { v |= bitB; actual.Store(v) })
+			d.AfterFunc(30*time.Millisecond, func() { v |= bitC; actual.Store(v) })
+
+			assert.True(t, timerB.Stop(), "Stop() should return true for pending timer")
+			require.NoError(t, h.Advance(30*time.Millisecond))
+			assert.Equal(t, int32(bitA|bitC), actual.Load(), "A and C should execute, B should be stopped")
+		})
+	})
+}
+
+func testTimingBoundary(t *testing.T, run RunFunc) {
+	t.Run("does not fire before delay elapses but fires at exact delay", func(t *testing.T) {
+		run(t, func(t *testing.T, d task.Dispatcher, h *TestHelper) {
+			var actual atomic.Bool
+			d.AfterFunc(100*time.Millisecond, func() {
+				actual.Store(true)
+			})
+			require.NoError(t, h.Advance(99*time.Millisecond))
+			assert.False(t, actual.Load(), "should not fire at delay-1")
+
+			require.NoError(t, h.Advance(1*time.Millisecond))
+			assert.True(t, actual.Load(), "should fire at exact delay")
+		})
+	})
+}
+
+func testDelayedRegistration(t *testing.T, run RunFunc) {
+	t.Run("afterFunc after time advanced uses relative delay", func(t *testing.T) {
+		run(t, func(t *testing.T, d task.Dispatcher, h *TestHelper) {
+			var actual atomic.Bool
+
+			require.NoError(t, h.Advance(50*time.Millisecond))
+			d.AfterFunc(10*time.Millisecond, func() {
+				actual.Store(true)
+			})
+
+			require.NoError(t, h.Advance(9*time.Millisecond))
+			assert.False(t, actual.Load(), "should not fire before relative delay")
+
+			require.NoError(t, h.Advance(1*time.Millisecond))
+			assert.True(t, actual.Load(), "should fire at relative delay")
+		})
+	})
+}
+
+func testNestedScheduling(t *testing.T, run RunFunc) {
+	t.Run("afterFunc from within callback", func(t *testing.T) {
+		run(t, func(t *testing.T, d task.Dispatcher, h *TestHelper) {
+			const (
+				bit1 = 1 << iota
+				bit2
+			)
+			var v int32
+			var actual atomic.Int32 // for assertion
+			d.AfterFunc(10*time.Millisecond, func() {
+				v |= bit1
+				actual.Store(v)
+				d.AfterFunc(20*time.Millisecond, func() {
+					v |= bit2
+					actual.Store(v)
+				})
+			})
+
+			require.NoError(t, h.Advance(30*time.Millisecond))
+			assert.Equal(t, int32(bit1|bit2), actual.Load(), "both callbacks should have fired")
+		})
+	})
+}
+
 func testConcurrency(t *testing.T, run RunFunc) {
 	t.Run("concurrent AfterFunc and half stop", func(t *testing.T) {
 		run(t, func(t *testing.T, d task.Dispatcher, h *TestHelper) {
 			const numGoroutines = 1000
 			executedCount := 0
+			var actual atomic.Int32
 
 			var wg sync.WaitGroup
 			wg.Add(numGoroutines)
@@ -284,6 +382,7 @@ func testConcurrency(t *testing.T, run RunFunc) {
 					defer wg.Done()
 					timer := d.AfterFunc(10*time.Millisecond, func() {
 						executedCount++
+						actual.Store(int32(executedCount))
 					})
 					if i%2 == 0 {
 						timer.Stop()
@@ -293,17 +392,17 @@ func testConcurrency(t *testing.T, run RunFunc) {
 			wg.Wait()
 
 			require.NoError(t, h.Advance(10*time.Millisecond))
-			assert.Equal(t, numGoroutines/2, executedCount, "half of tasks should execute")
+			assert.Equal(t, int32(numGoroutines/2), actual.Load(), "half of tasks should execute")
 		})
 	})
 
 	t.Run("concurrent stop", func(t *testing.T) {
 		run(t, func(t *testing.T, d task.Dispatcher, h *TestHelper) {
 			const numGoroutines = 100
-			executed := false
+			var actual atomic.Bool
 
 			timer := d.AfterFunc(20*time.Millisecond, func() {
-				executed = true
+				actual.Store(true)
 			})
 
 			var wg sync.WaitGroup
@@ -321,7 +420,7 @@ func testConcurrency(t *testing.T, run RunFunc) {
 
 			assert.Equal(t, int32(1), successfulStops.Load(), "only one Stop() should succeed")
 			require.NoError(t, h.Advance(100*time.Millisecond))
-			assert.False(t, executed, "function should not execute after being stopped")
+			assert.False(t, actual.Load(), "function should not execute after being stopped")
 		})
 	})
 }

@@ -48,17 +48,20 @@ func TestDispatcher_FastForward(t *testing.T) {
 	})
 }
 
-func TestDispatcher_SameDelayFIFO(t *testing.T) {
+func TestDispatcher_NestedAfterFunc_SameFastForward(t *testing.T) {
 	startTime := timeNow()
 	dispatcher := NewDispatcher(startTime)
 
-	var order []int
-	dispatcher.AfterFunc(10*time.Millisecond, func() { order = append(order, 1) })
-	dispatcher.AfterFunc(10*time.Millisecond, func() { order = append(order, 2) })
-	dispatcher.AfterFunc(10*time.Millisecond, func() { order = append(order, 3) })
+	var results []int
+	dispatcher.AfterFunc(10*time.Millisecond, func() {
+		results = append(results, 1)
+		dispatcher.AfterFunc(0, func() {
+			results = append(results, 2)
+		})
+	})
 
 	require.NoError(t, dispatcher.FastForward(startTime.Add(10*time.Millisecond)))
-	assert.Equal(t, []int{1, 2, 3}, order, "same delay should execute in registration order (FIFO)")
+	assert.Equal(t, []int{1, 2}, results, "tasks added during execution should run in same FastForward")
 }
 
 func TestDispatcher_ResourceManagement(t *testing.T) {
