@@ -20,6 +20,7 @@ This approach makes complex stateful logic simple to implement, test, and extend
 - **Task serialization** via dispatchers to eliminate race conditions in async processing
 - **Unified state machines** that handle both transitions and timeouts consistently
 - **Predefined state graphs** for predictable runtime behavior and easy debugging
+- **State transition tracing** via pluggable `Tracer` for logging and debugging
 - **Virtual time support** for deterministic testing of time-dependent logic
 - **Panic-based utilities** for clear distinction between bugs and recoverable errors
 
@@ -189,6 +190,7 @@ This example demonstrates the following kazura features:
 - **Asynchronous Processing**: Post-transition async processing with `AfterEntry`
 - **Event Dispatching**: Event ordering control with `eventloop.Dispatcher`
 - **Virtual Time**: Time control for testing with `FastForward`
+- **State Transition Tracing**: Observe transitions via `state.WithTracer` for logging and debugging
 
 See the code example at [examples/vending-machine](examples/vending-machine/main.go).
 

@@ -393,6 +393,61 @@ err := machine.Trigger(&ButtonEvent{Item: "coffee"})
 - Returning `*state.Guarded` blocks the state transition and returns an error
 - Returning `nil` allows the transition
 
+## Observability
+
+### Tracing State Transitions
+
+Use `state.WithTracer` to observe every state transition from outside the machine.
+
+```go
+type Tracer[S any] interface {
+    Trace(fromState, toState S, event Event)
+}
+```
+
+Pass a `Tracer` implementation when constructing the machine. `%T` prints the
+state type name, which is usually more informative than `%v` for logging
+(states with no logging-relevant fields print as `{}` or a bare address
+under `%v`).
+
+```go
+import (
+    "fmt"
+    "log/slog"
+)
+
+type transitionLogger struct{}
+
+func (transitionLogger) Trace(from, to State, event state.Event) {
+    slog.Info("transition",
+        "from", fmt.Sprintf("%T", from),
+        "to", fmt.Sprintf("%T", to),
+        "event", event)
+}
+
+machine := state.NewMachine(stateGraph, &data, state.WithTracer[State](transitionLogger{}))
+```
+
+`State` here is the project's type alias for `state.State[*Data]`. The
+explicit `[State]` on `WithTracer` is required because Go cannot infer `S`
+from the receiver type of `transitionLogger.Trace` alone.
+
+**Call Semantics**:
+- Called after an exit-action succeeds and before the destination state's `Entry` is invoked
+- On `Launch`, `fromState` is the zero value of `S` and `event` is `nil`
+- On `Stop`, `fromState` is the state the machine was in, `toState` is the zero value of `S`, and `event` is `nil`
+- **Not** called when a transition is blocked by a `Guarded` error from an exit-action
+- **Not** called for the destination side when `Stop` is invoked from within an exit-action (the Stop-side trace is still recorded)
+- Recorded even if the destination state's `Entry` panics — useful for post-mortem debugging
+- Invoked synchronously on the Machine's goroutine; implementations must not block
+
+**Use Cases**:
+- Structured transition logging without cluttering `Entry` methods
+- Generating debug traces or timelines for analysis
+- Collecting transition metrics (e.g., transition counts per state pair)
+
+See [examples/vending-machine](../examples/vending-machine/) for a working example.
+
 ## Architecture Patterns
 
 ### Gateway Struct Pattern

@@ -13,7 +13,7 @@ var errMethodNotCallable = fmt.Errorf("method is not callable here")
 
 // NewMachine creates a new state machine with the given graph and value.
 // Returns a configured but not yet launched machine.
-func NewMachine[S State[T], T any](g *graph.Graph[S, reflect.Type], v T) *Machine[S, T] {
+func NewMachine[S State[T], T any](g *graph.Graph[S, reflect.Type], v T, opts ...Option[S]) *Machine[S, T] {
 	if g == nil {
 		panic("graph cannot be nil")
 	}
@@ -21,6 +21,9 @@ func NewMachine[S State[T], T any](g *graph.Graph[S, reflect.Type], v T) *Machin
 	m := &Machine[S, T]{
 		graph: g,
 		value: v,
+	}
+	for _, opt := range opts {
+		opt(&m.config)
 	}
 	m.accessor.machine = m
 	return m
@@ -50,6 +53,7 @@ type Machine[S State[T], T any] struct {
 	onExit     func(machine *ExitMachine[T], event Event) *Guarded
 	afterEntry func(machine *AfterEntryMachine[T])
 	accessor   machineAccessor[T]
+	config     machineConfig[S]
 }
 
 func (m *Machine[S, T]) Value() T {
@@ -78,6 +82,10 @@ func (m *Machine[S, T]) Launch() error {
 
 	// Enter the initial state
 	m.manager.Set(nextNode)
+	if m.config.tracer != nil {
+		var zero S
+		m.config.tracer.Trace(zero, nextNode.State, nil)
+	}
 	m.context = executionContextEntry
 	nextNode.State.Entry((*EntryMachine[T])(&m.accessor), nil)
 
@@ -187,6 +195,9 @@ func (m *Machine[S, T]) triggerOnce(event Event) error {
 
 	// Transition to the new state
 	m.manager.Set(nextNode)
+	if m.config.tracer != nil {
+		m.config.tracer.Trace(currentNode.State, nextNode.State, event)
+	}
 	m.context = executionContextEntry
 	nextNode.State.Entry((*EntryMachine[T])(&m.accessor), event)
 
@@ -200,12 +211,18 @@ func (m *Machine[S, T]) Stop() error {
 		return fmt.Errorf("machine is already stopped")
 	}
 
+	lastNode := m.manager.Get()
 	m.state = stateStopped
 	// Clear state and cancel all timers
 	m.manager.Set(nil)
 	// Clear any pending callbacks
 	m.onExit = nil
 	m.afterEntry = nil
+
+	if m.config.tracer != nil {
+		var zero S
+		m.config.tracer.Trace(lastNode.State, zero, nil)
+	}
 
 	return nil
 }

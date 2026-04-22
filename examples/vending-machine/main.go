@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -31,10 +32,18 @@ type InitialState struct {
 }
 
 func (s InitialState) Entry(machine *EntryMachine, event Event) {
-	if event != nil {
-		log.Info("enter InitialState", "event", event)
-	}
 	machine.Value().Coins = 0 // reset coins
+}
+
+// transitionLogger implements state.Tracer and logs every state transition.
+// Using WithTracer keeps each Entry method free of transition-logging boilerplate.
+type transitionLogger struct{}
+
+func (transitionLogger) Trace(from, to State, event state.Event) {
+	log.Info("transition",
+		"from", fmt.Sprintf("%T", from),
+		"to", fmt.Sprintf("%T", to),
+		"event", event)
 }
 
 // WaitingState represents the state where the machine waits for user interaction.
@@ -109,7 +118,7 @@ func main() {
 	vendingMachine := VendingMachine{
 		Dispatcher: dispatcher,
 	}
-	machine := state.NewMachine(stateGraph, &vendingMachine)
+	machine := state.NewMachine(stateGraph, &vendingMachine, state.WithTracer[State](transitionLogger{}))
 	must.NoError(machine.Launch())
 
 	// Scenario 1: Buy water (1 coin required)

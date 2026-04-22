@@ -8,22 +8,30 @@ stateDiagram-v2
   WaitingState --> PouringState: ButtonEvent
   WaitingState --> WaitingState: CoinEvent
 ```
+transition from=<nil> to=main.InitialState event=<nil>
 scenario: basic (pouring water)
+transition from=main.InitialState to=main.WaitingState event=1
 coin count=1
+transition from=main.WaitingState to=main.PouringState event=&{water}
 pouring item=water
-enter InitialState event=done
+transition from=main.PouringState to=main.InitialState event=done
 ---
 scenario: basic (pouring coffee)
+transition from=main.InitialState to=main.WaitingState event=1
 coin count=1
+transition from=main.WaitingState to=main.WaitingState event=2
 coin count=2
+transition from=main.WaitingState to=main.PouringState event=&{coffee}
 pouring item=coffee
-enter InitialState event=done
+transition from=main.PouringState to=main.InitialState event=done
 ---
 scenario: insufficient coins and cancel
+transition from=main.InitialState to=main.WaitingState event=1
 coin count=1
 insufficient coins error="2 coin(s) for coffee, but 1"
-enter InitialState event=cancel
+transition from=main.WaitingState to=main.InitialState event=cancel
 ---
 scenario: timeout
+transition from=main.InitialState to=main.WaitingState event=1
 coin count=1
-enter InitialState event=timeout
+transition from=main.WaitingState to=main.InitialState event=timeout

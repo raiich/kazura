@@ -1404,3 +1404,194 @@ func TestExitMachine_Value(t *testing.T) {
 		assert.True(t, exitExecuted)
 	})
 }
+
+type tracerCall struct {
+	from, to State
+	event    state.Event
+}
+
+type recordingTracer struct {
+	calls []tracerCall
+}
+
+func (r *recordingTracer) Trace(from, to State, event state.Event) {
+	r.calls = append(r.calls, tracerCall{from: from, to: to, event: event})
+}
+
+func TestMachine_Tracer(t *testing.T) {
+	type NextEvent struct{}
+	type BlockedEvent struct{}
+
+	t.Run("Trace is called with (nil, initial, nil) on Launch", func(t *testing.T) {
+		value := &TestValue{Map: make(map[string]any)}
+		initialState := &TestState{name: "initial"}
+
+		graph, err := state.NewGraph[State](initialState)
+		require.NoError(t, err)
+
+		tracer := &recordingTracer{}
+		machine := state.NewMachine(graph, value, state.WithTracer[State](tracer))
+		require.NoError(t, machine.Launch())
+
+		require.Len(t, tracer.calls, 1)
+		assert.Nil(t, tracer.calls[0].from)
+		assert.Equal(t, initialState, tracer.calls[0].to)
+		assert.Nil(t, tracer.calls[0].event)
+	})
+
+	t.Run("Trace is called with (from, to, event) on transition", func(t *testing.T) {
+		value := &TestValue{Map: make(map[string]any)}
+		initialState := &TestState{name: "initial"}
+		nextState := &TestState{name: "next"}
+
+		graph, err := state.NewGraph[State](
+			initialState,
+			On[NextEvent](initialState, nextState),
+		)
+		require.NoError(t, err)
+
+		tracer := &recordingTracer{}
+		machine := state.NewMachine(graph, value, state.WithTracer[State](tracer))
+		require.NoError(t, machine.Launch())
+
+		event := NextEvent{}
+		require.NoError(t, machine.Trigger(event))
+
+		require.Len(t, tracer.calls, 2)
+		// first call is Launch, second call is the transition
+		assert.Nil(t, tracer.calls[0].from)
+		assert.Equal(t, initialState, tracer.calls[0].to)
+		assert.Equal(t, initialState, tracer.calls[1].from)
+		assert.Equal(t, nextState, tracer.calls[1].to)
+		assert.Equal(t, event, tracer.calls[1].event)
+	})
+
+	t.Run("Trace is recorded before Entry on Launch, even if Entry panics", func(t *testing.T) {
+		value := &TestValue{Map: make(map[string]any)}
+		panicState := &TestState{
+			name: "panic",
+			entry: func(_ *EntryMachine, _ Event) {
+				panic("entry panic")
+			},
+		}
+
+		graph, err := state.NewGraph[State](panicState)
+		require.NoError(t, err)
+
+		tracer := &recordingTracer{}
+		machine := state.NewMachine(graph, value, state.WithTracer[State](tracer))
+
+		assert.PanicsWithValue(t, "entry panic", func() {
+			_ = machine.Launch()
+		})
+
+		require.Len(t, tracer.calls, 1)
+		assert.Nil(t, tracer.calls[0].from)
+		assert.Equal(t, panicState, tracer.calls[0].to)
+	})
+
+	t.Run("Trace is recorded before Entry on Trigger, even if Entry panics", func(t *testing.T) {
+		value := &TestValue{Map: make(map[string]any)}
+		initialState := &TestState{name: "initial"}
+		panicState := &TestState{
+			name: "panic",
+			entry: func(_ *EntryMachine, _ Event) {
+				panic("entry panic")
+			},
+		}
+
+		graph, err := state.NewGraph[State](
+			initialState,
+			On[NextEvent](initialState, panicState),
+		)
+		require.NoError(t, err)
+
+		tracer := &recordingTracer{}
+		machine := state.NewMachine(graph, value, state.WithTracer[State](tracer))
+		require.NoError(t, machine.Launch())
+		require.Len(t, tracer.calls, 1)
+
+		event := NextEvent{}
+		assert.PanicsWithValue(t, "entry panic", func() {
+			_ = machine.Trigger(event)
+		})
+
+		require.Len(t, tracer.calls, 2)
+		assert.Equal(t, initialState, tracer.calls[1].from)
+		assert.Equal(t, panicState, tracer.calls[1].to)
+		assert.Equal(t, event, tracer.calls[1].event)
+	})
+
+	t.Run("Trace is not called when exit-action blocks with Guarded", func(t *testing.T) {
+		value := &TestValue{Map: make(map[string]any)}
+		nextState := &TestState{name: "next"}
+		initialState := &TestState{
+			name: "initial",
+			entry: func(machine *EntryMachine, event Event) {
+				err := machine.OnExit(func(_ *state.ExitMachine[*TestValue], _ Event) *state.Guarded {
+					return &state.Guarded{Reason: errors.New("blocked")}
+				})
+				require.NoError(t, err)
+			},
+		}
+
+		graph, err := state.NewGraph[State](
+			initialState,
+			On[BlockedEvent](initialState, nextState),
+		)
+		require.NoError(t, err)
+
+		tracer := &recordingTracer{}
+		machine := state.NewMachine(graph, value, state.WithTracer[State](tracer))
+		require.NoError(t, machine.Launch())
+
+		// Launch recorded one call; blocked transition must not add another.
+		require.Len(t, tracer.calls, 1)
+
+		err = machine.Trigger(BlockedEvent{})
+		require.Error(t, err)
+		assert.Len(t, tracer.calls, 1)
+	})
+
+	t.Run("Trace is called with (last, nil, nil) on Stop", func(t *testing.T) {
+		value := &TestValue{Map: make(map[string]any)}
+		initialState := &TestState{name: "initial"}
+		nextState := &TestState{name: "next"}
+
+		graph, err := state.NewGraph[State](
+			initialState,
+			On[NextEvent](initialState, nextState),
+		)
+		require.NoError(t, err)
+
+		tracer := &recordingTracer{}
+		machine := state.NewMachine(graph, value, state.WithTracer[State](tracer))
+		require.NoError(t, machine.Launch())
+		require.NoError(t, machine.Trigger(NextEvent{}))
+		require.Len(t, tracer.calls, 2)
+
+		require.NoError(t, machine.Stop())
+
+		require.Len(t, tracer.calls, 3)
+		assert.Equal(t, nextState, tracer.calls[2].from)
+		assert.Nil(t, tracer.calls[2].to)
+		assert.Nil(t, tracer.calls[2].event)
+	})
+
+	t.Run("Machine without tracer does not panic", func(t *testing.T) {
+		value := &TestValue{Map: make(map[string]any)}
+		initialState := &TestState{name: "initial"}
+		nextState := &TestState{name: "next"}
+
+		graph, err := state.NewGraph[State](
+			initialState,
+			On[NextEvent](initialState, nextState),
+		)
+		require.NoError(t, err)
+
+		machine := state.NewMachine(graph, value)
+		require.NoError(t, machine.Launch())
+		require.NoError(t, machine.Trigger(NextEvent{}))
+		require.NoError(t, machine.Stop())
+	})
+}
