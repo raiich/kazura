@@ -14,18 +14,18 @@ import (
 )
 
 func TestDispatcher(t *testing.T) {
-	tasktest.TestDispatcher(t, func(t *testing.T, f func(t *testing.T, d task.Dispatcher, h *tasktest.TestHelper)) {
+	tasktest.TestDispatcher(t, func(t *testing.T) (task.Dispatcher, *tasktest.TestHelper) {
 		start := time.Unix(0, 0)
 		base := eventloop.NewDispatcher(start)
 		currentTime := start
 		d := NewDispatcher(base, func() time.Time { return currentTime })
-		f(t, d, &tasktest.TestHelper{
+		return d, &tasktest.TestHelper{
 			Start: start,
 			AdvanceToFunc: func(to time.Time) error {
 				currentTime = to
 				return base.FastForward(to)
 			},
-		})
+		}
 	})
 }
 

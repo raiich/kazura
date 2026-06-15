@@ -12,29 +12,27 @@ import (
 )
 
 func TestDispatcher(t *testing.T) {
-	tasktest.TestDispatcher(t, func(t *testing.T, f func(t *testing.T, d task.Dispatcher, h *tasktest.TestHelper)) {
-		tasktest.WithSyncTest(func(t *testing.T) {
-			ctx, cancel := context.WithCancel(t.Context())
-			dispatcher := NewDispatcher(ctx)
-			var serveErr error
-			go func() {
-				serveErr = dispatcher.Serve()
-			}()
-			t.Cleanup(func() {
-				cancel()
+	tasktest.TestDispatcher(t, func(t *testing.T) (task.Dispatcher, *tasktest.TestHelper) {
+		ctx, cancel := context.WithCancel(t.Context())
+		dispatcher := NewDispatcher(ctx)
+		var serveErr error
+		go func() {
+			serveErr = dispatcher.Serve()
+		}()
+		t.Cleanup(func() {
+			cancel()
+			synctest.Wait()
+		})
+		return dispatcher, &tasktest.TestHelper{
+			Start: time.Now(),
+			AdvanceToFunc: func(to time.Time) error {
+				if dur := time.Until(to); dur > 0 {
+					time.Sleep(dur)
+				}
 				synctest.Wait()
-			})
-			f(t, dispatcher, &tasktest.TestHelper{
-				Start: time.Now(),
-				AdvanceToFunc: func(to time.Time) error {
-					if dur := time.Until(to); dur > 0 {
-						time.Sleep(dur)
-					}
-					synctest.Wait()
-					return serveErr
-				},
-			})
-		})(t)
+				return serveErr
+			},
+		}
 	})
 }
 
