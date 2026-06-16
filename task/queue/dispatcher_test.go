@@ -14,10 +14,10 @@ import (
 func TestDispatcher(t *testing.T) {
 	tasktest.TestDispatcher(t, func(t *testing.T) (task.Dispatcher, *tasktest.TestHelper) {
 		ctx, cancel := context.WithCancel(t.Context())
-		dispatcher := NewDispatcher(ctx)
+		dispatcher := NewDispatcher()
 		var serveErr error
 		go func() {
-			serveErr = dispatcher.Serve()
+			serveErr = dispatcher.Serve(ctx)
 		}()
 		t.Cleanup(func() {
 			cancel()
@@ -30,6 +30,9 @@ func TestDispatcher(t *testing.T) {
 					time.Sleep(dur)
 				}
 				synctest.Wait()
+				// serveErr is read without a lock, but this is safe after
+				// synctest.Wait: the Serve goroutine is either durably blocked
+				// (no write) or has returned (its write happens-before this read).
 				return serveErr
 			},
 		}
@@ -39,7 +42,7 @@ func TestDispatcher(t *testing.T) {
 func TestDispatcher_Serve(t *testing.T) {
 	t.Run("context cancellation by goroutine", tasktest.WithSyncTest(func(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
-		dispatcher := NewDispatcher(ctx)
+		dispatcher := NewDispatcher()
 
 		go func() {
 			cancel() // Stop dispatcher
@@ -48,7 +51,7 @@ func TestDispatcher_Serve(t *testing.T) {
 		// Start Serve in a goroutine
 		var serveErr error
 		go func() {
-			serveErr = dispatcher.Serve()
+			serveErr = dispatcher.Serve(ctx)
 		}()
 
 		synctest.Wait()
@@ -58,12 +61,12 @@ func TestDispatcher_Serve(t *testing.T) {
 
 	t.Run("context cancellation by AfterFunc", tasktest.WithSyncTest(func(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
-		dispatcher := NewDispatcher(ctx)
+		dispatcher := NewDispatcher()
 
 		// Start Serve in a goroutine
 		var serveErr error
 		go func() {
-			serveErr = dispatcher.Serve()
+			serveErr = dispatcher.Serve(ctx)
 		}()
 
 		dispatcher.AfterFunc(1*time.Millisecond, func() {
@@ -76,16 +79,46 @@ func TestDispatcher_Serve(t *testing.T) {
 		assert.ErrorIs(t, serveErr, context.Canceled, "Serve should return context.Canceled")
 	}))
 
+	t.Run("concurrent call returns ErrServed", tasktest.WithSyncTest(func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		dispatcher := NewDispatcher()
+
+		go func() {
+			_ = dispatcher.Serve(ctx)
+		}()
+		synctest.Wait()
+
+		assert.ErrorIs(t, dispatcher.Serve(ctx), ErrServed, "second Serve while running should return ErrServed")
+
+		cancel()
+		synctest.Wait()
+	}))
+
+	t.Run("call after stop returns ErrServed", tasktest.WithSyncTest(func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		dispatcher := NewDispatcher()
+
+		var serveErr error
+		go func() {
+			serveErr = dispatcher.Serve(ctx)
+		}()
+		cancel()
+		synctest.Wait()
+
+		assert.ErrorIs(t, serveErr, context.Canceled)
+		assert.ErrorIs(t, dispatcher.Serve(ctx), ErrServed, "Serve after stop should return ErrServed")
+	}))
+
 	t.Run("timeout context", tasktest.WithSyncTest(func(t *testing.T) {
 		timeout := 10 * time.Millisecond
-		parentCtx, cancel := context.WithTimeout(t.Context(), timeout)
+		ctx, cancel := context.WithTimeout(t.Context(), timeout)
 		defer cancel()
-		dispatcher := NewDispatcher(parentCtx)
+		dispatcher := NewDispatcher()
 
 		// Start Serve in a goroutine
 		var serveErr error
 		go func() {
-			serveErr = dispatcher.Serve()
+			serveErr = dispatcher.Serve(ctx)
 		}()
 
 		time.Sleep(timeout)
@@ -97,14 +130,14 @@ func TestDispatcher_Serve(t *testing.T) {
 
 func TestDispatcher_QueueBehavior(t *testing.T) {
 	t.Run("queue capacity", tasktest.WithSyncTest(func(t *testing.T) {
-		parentCtx, cancel := context.WithCancel(t.Context())
+		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
-		dispatcher := NewDispatcher(parentCtx)
+		dispatcher := NewDispatcher()
 
 		// Start dispatcher
 		var serveErr error
 		go func() {
-			serveErr = dispatcher.Serve()
+			serveErr = dispatcher.Serve(ctx)
 		}()
 
 		var completedCount int
@@ -126,14 +159,14 @@ func TestDispatcher_QueueBehavior(t *testing.T) {
 	}))
 
 	t.Run("context cancelled during queue wait", tasktest.WithSyncTest(func(t *testing.T) {
-		parentCtx, cancel := context.WithCancel(t.Context())
+		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
-		dispatcher := NewDispatcher(parentCtx)
+		dispatcher := NewDispatcher()
 
 		// Start dispatcher
 		var serveErr error
 		go func() {
-			serveErr = dispatcher.Serve()
+			serveErr = dispatcher.Serve(ctx)
 		}()
 
 		var executedBefore, executedAfter bool
@@ -163,11 +196,11 @@ func TestDispatcher_QueueBehavior(t *testing.T) {
 
 	t.Run("enqueue abandoned after context cancel", tasktest.WithSyncTest(func(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
-		dispatcher := NewDispatcher(ctx)
+		dispatcher := NewDispatcher()
 
 		var serveErr error
 		go func() {
-			serveErr = dispatcher.Serve()
+			serveErr = dispatcher.Serve(ctx)
 		}()
 
 		executed := false
@@ -188,9 +221,9 @@ func TestDispatcher_QueueBehavior(t *testing.T) {
 
 func TestDispatcher_Concurrency(t *testing.T) {
 	t.Run("mixed duration tasks", tasktest.WithSyncTest(func(t *testing.T) {
-		parentCtx, cancel := context.WithCancel(t.Context())
+		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
-		dispatcher := NewDispatcher(parentCtx)
+		dispatcher := NewDispatcher()
 
 		var shortCount, mediumCount, longCount int
 		const tasksPerCategory = 100
@@ -198,7 +231,7 @@ func TestDispatcher_Concurrency(t *testing.T) {
 		// Start dispatcher
 		var serveErr error
 		go func() {
-			serveErr = dispatcher.Serve()
+			serveErr = dispatcher.Serve(ctx)
 		}()
 
 		// Schedule tasks with different durations concurrently

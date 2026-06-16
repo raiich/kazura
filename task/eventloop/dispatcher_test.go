@@ -24,10 +24,20 @@ func TestDispatcher(t *testing.T) {
 }
 
 func TestDispatcher_FastForward(t *testing.T) {
-	t.Run("fast forward error", func(t *testing.T) {
+	t.Run("backward time is a no-op", func(t *testing.T) {
 		startTime := timeNow()
 		dispatcher := NewDispatcher(startTime)
-		assert.ErrorContains(t, dispatcher.FastForward(startTime.Add(-1)), "unprocessable time")
+
+		executed := false
+		dispatcher.AfterFunc(0, func() { executed = true })
+
+		// Fast-forwarding before the current time runs nothing and is not an error.
+		require.NoError(t, dispatcher.FastForward(startTime.Add(-1)))
+		assert.False(t, executed, "tasks should not run when fast-forwarding backward")
+
+		// Time is not rewound, so a forward fast-forward still runs the task.
+		require.NoError(t, dispatcher.FastForward(startTime))
+		assert.True(t, executed)
 	})
 
 	t.Run("partial advance", func(t *testing.T) {

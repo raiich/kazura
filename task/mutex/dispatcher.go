@@ -14,8 +14,13 @@ import (
 	"github.com/raiich/kazura/task/internal"
 )
 
+var _ task.Dispatcher = (*Dispatcher)(nil)
+
 // Dispatcher is used to execute Task sequentially in same goroutine of caller, using sync.Mutex.
 type Dispatcher struct {
+	// errCh receives the panic error when a function panics. Buffered with size 1:
+	// the ended gate ensures at most one panic is ever sent, so the send (done
+	// while holding mu) never blocks.
 	errCh chan error
 	mu    sync.Mutex
 	// ended indicates whether the dispatcher has been terminated due to a panic.
@@ -27,23 +32,6 @@ type Dispatcher struct {
 // Err returns a channel that receives an error when the dispatcher stops due to an unrecoverable error.
 func (d *Dispatcher) Err() <-chan error {
 	return d.errCh
-}
-
-// safeExec executes the given function with panic recovery.
-// If the function panics:
-// 1. The dispatcher is marked as ended (no more functions will execute)
-// 2. The panic is caught and sent as an error to the error channel
-// 3. All subsequent scheduled functions are silently ignored
-// This ensures that one panicking function doesn't affect the entire system
-// while still providing visibility into the failure through Err().
-func (d *Dispatcher) safeExec(f func()) {
-	defer func() {
-		if r := recover(); r != nil {
-			d.ended = true
-			d.errCh <- fmt.Errorf("panic: %v\n%s", r, debug.Stack())
-		}
-	}()
-	f()
 }
 
 // AfterFunc schedules f to execute after the specified duration.
@@ -67,7 +55,13 @@ func (d *Dispatcher) AfterFunc(duration time.Duration, f func()) task.Timer {
 			return
 		}
 		t.TryFire(func() {
-			d.safeExec(f)
+			defer func() {
+				if r := recover(); r != nil {
+					d.ended = true
+					d.errCh <- fmt.Errorf("panic: %v\n%s", r, debug.Stack())
+				}
+			}()
+			f()
 		})
 	})
 	return t

@@ -3,12 +3,11 @@
 package eventloop
 
 import (
-	"fmt"
-	"runtime/debug"
 	"sync"
 	"time"
 
 	"github.com/raiich/kazura/task"
+	"github.com/raiich/kazura/task/internal"
 )
 
 // Dispatcher manages scheduled tasks with controllable time progression.
@@ -19,8 +18,10 @@ type Dispatcher struct {
 	mu sync.Mutex
 	// Current simulated time
 	now time.Time
+
+	ended bool
 	// Ordered list of scheduled tasks (earliest first)
-	tasks []*scheduledTask
+	tasks []scheduledTask
 }
 
 // FastForward advances the time to the specified time and executes all tasks
@@ -31,58 +32,36 @@ type Dispatcher struct {
 // Concurrent calls from multiple goroutines may lead to race conditions.
 func (d *Dispatcher) FastForward(to time.Time) error {
 	for {
-		head, ok, err := d.proceedAndDequeue(to)
-		if err != nil {
-			return err
-		}
+		head, ok := d.proceedAndDequeue(to)
 		if !ok {
 			return nil
 		}
-		if head == nil {
-			return nil
-		}
-		if err := d.safeExec(head); err != nil {
+		if err := head.Run(); err != nil {
 			return err
 		}
 	}
-}
-
-// safeExec executes a scheduled task with panic recovery.
-// If the task panics, it recovers and returns an error instead.
-func (d *Dispatcher) safeExec(task *scheduledTask) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("panic: %v\n%s", r, debug.Stack())
-		}
-	}()
-	task.Exec()
-	return nil
 }
 
 // proceedAndDequeue advances time and dequeues the next task if available.
 // Returns the next task and whether one was found within the time limit and an error if any occurs during processing.
-func (d *Dispatcher) proceedAndDequeue(end time.Time) (*scheduledTask, bool, error) {
+func (d *Dispatcher) proceedAndDequeue(end time.Time) (*internal.PendingTask, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if end.Before(d.now) {
-		return nil, false, fmt.Errorf("unprocessable time: now=%v, to=%v", d.now, end)
-	}
-
 	head, ok := d.dequeue(end)
 	if !ok {
-		// No more tasks before end time, advance to end
-		d.now = end
-		return nil, false, nil
+		if end.After(d.now) {
+			// No more tasks before end time, advance to end
+			d.now = end
+		}
+		return nil, false
 	}
-	// Advance time to the task's scheduled time
-	d.now = head.at
-	return head, true, nil
+	return head, true
 }
 
 // dequeue removes and returns the earliest scheduled task if it should execute before end time.
 // Returns the task and whether one was available within the time limit.
-func (d *Dispatcher) dequeue(end time.Time) (*scheduledTask, bool) {
+func (d *Dispatcher) dequeue(end time.Time) (*internal.PendingTask, bool) {
 	if len(d.tasks) == 0 {
 		return nil, false
 	}
@@ -93,7 +72,9 @@ func (d *Dispatcher) dequeue(end time.Time) (*scheduledTask, bool) {
 	}
 	// Remove the task from the queue
 	d.tasks = tail
-	return head, true
+	// Advance time to the task's scheduled time
+	d.now = head.at
+	return head.task, true
 }
 
 // AfterFunc schedules a function to be executed after the specified duration.
@@ -103,11 +84,20 @@ func (d *Dispatcher) AfterFunc(duration time.Duration, f func()) task.Timer {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	at := d.now.Add(duration)
-	entry := &scheduledTask{
-		at:   at,
-		task: f,
+	if d.ended {
+		return internal.StoppedTimer(true)
 	}
+
+	at := d.now.Add(duration)
+	t := internal.NewPendingTask(f)
+	d.enqueue(at, t)
+	return &taskTimer{
+		dispatcher: d,
+		task:       t,
+	}
+}
+
+func (d *Dispatcher) enqueue(at time.Time, pending *internal.PendingTask) {
 	// Find the correct insertion point to maintain chronological order
 	i := 0
 	for i < len(d.tasks) {
@@ -117,14 +107,13 @@ func (d *Dispatcher) AfterFunc(duration time.Duration, f func()) task.Timer {
 		i++
 	}
 	// Insert the task at the correct position
-	d.insertTask(i, entry)
-	return &taskTimer{
-		dispatcher: d,
-		entry:      entry,
-	}
+	d.insertTask(i, scheduledTask{
+		at:   at,
+		task: pending,
+	})
 }
 
-func (d *Dispatcher) insertTask(i int, entry *scheduledTask) {
+func (d *Dispatcher) insertTask(i int, entry scheduledTask) {
 	if len(d.tasks) == i {
 		d.tasks = append(d.tasks, entry)
 		return
@@ -135,12 +124,12 @@ func (d *Dispatcher) insertTask(i int, entry *scheduledTask) {
 
 // dropTask removes a specific scheduled task from the queue.
 // Returns true if the task was found and removed, false otherwise.
-func (d *Dispatcher) dropTask(task *scheduledTask) bool {
+func (d *Dispatcher) dropTask(task *internal.PendingTask) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	for i, e := range d.tasks {
-		if e == task {
+		if e.task == task {
 			// Remove the task by slicing around it
 			d.tasks = append(d.tasks[:i], d.tasks[i+1:]...)
 			return true
@@ -160,13 +149,8 @@ func NewDispatcher(now time.Time) *Dispatcher {
 type scheduledTask struct {
 	// When the task should execute
 	at time.Time
-	// The function to execute
-	task func()
-}
 
-// Exec executes the scheduled task.
-func (t *scheduledTask) Exec() {
-	t.task()
+	task *internal.PendingTask
 }
 
 // taskTimer implements the task.Timer interface for canceling scheduled tasks.
@@ -174,11 +158,11 @@ type taskTimer struct {
 	// Reference to the dispatcher that owns this timer
 	dispatcher *Dispatcher
 	// The scheduled task this timer controls
-	entry *scheduledTask
+	task *internal.PendingTask
 }
 
 // Stop cancels the scheduled task.
 // Returns true if the task was successfully canceled, false if it was already executed or canceled.
 func (t *taskTimer) Stop() bool {
-	return t.dispatcher.dropTask(t.entry)
+	return t.dispatcher.dropTask(t.task)
 }
