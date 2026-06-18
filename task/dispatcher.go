@@ -6,7 +6,7 @@ import "time"
 // This abstraction allows working with different timer implementations,
 // including test-friendly dispatchers that can control time simulation.
 //
-// AfterFunc is safe for concurrent use from multiple goroutines.
+// AfterFunc and InvokeFunc are safe for concurrent use from multiple goroutines.
 type Dispatcher interface {
 	// AfterFunc schedules f to be executed after duration d and returns a [Timer]
 	// that can cancel the scheduled execution.
@@ -28,4 +28,13 @@ type Dispatcher interface {
 	//	d.AfterFunc(1*time.Millisecond, func() { counter += 3 })
 	//	// After execution: counter == 5 (no race conditions)
 	AfterFunc(d time.Duration, f func()) Timer
+
+	// InvokeFunc submits f for serialized execution and returns a [Task] to await
+	// its completion. The Synchronization and Panic handling notes on AfterFunc
+	// apply. For the Task's result — success, [ErrCanceled] if the dispatcher
+	// stopped first, or a re-raised panic — see [Task.Wait].
+	//
+	// An implementation may run f synchronously in the caller's goroutine, so
+	// calling InvokeFunc or AfterFunc from within a dispatched function may deadlock.
+	InvokeFunc(f func()) Task
 }

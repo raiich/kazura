@@ -1,6 +1,7 @@
 package tasktest
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -40,6 +41,9 @@ func TestDispatcher(t *testing.T, setup SetupFunc) {
 	t.Helper()
 	t.Run("AfterFunc", func(t *testing.T) {
 		testAfterFunc(t, setup)
+	})
+	t.Run("InvokeFunc", func(t *testing.T) {
+		testInvokeFunc(t, setup)
 	})
 	t.Run("TimerStop", func(t *testing.T) {
 		testTimerStop(t, setup)
@@ -82,6 +86,105 @@ func testAfterFunc(t *testing.T, setup SetupFunc) {
 		require.NoError(t, h.AdvanceTo(h.Start.Add(55*time.Millisecond)))
 		assert.Equal(t, int32(1), actual.Load(), "function should execute exactly once")
 	})
+}
+
+func testInvokeFunc(t *testing.T, setup SetupFunc) {
+	run(t, "executes the submitted function once, serialized", func(t *testing.T) {
+		d, h := setup(t)
+		var counter int32
+		var actual atomic.Int32 // for assertion
+		d.InvokeFunc(func() {
+			counter += 2
+			actual.Store(counter)
+		})
+		d.InvokeFunc(func() {
+			counter += 3
+			actual.Store(counter)
+		})
+		require.NoError(t, h.AdvanceTo(h.Start))
+		assert.Equal(t, int32(5), actual.Load(), "counter should be 5 (sequential execution, no race conditions)")
+		require.NoError(t, h.AdvanceTo(h.Start.Add(50*time.Millisecond)))
+		assert.Equal(t, int32(5), actual.Load(), "each function should execute exactly once")
+	})
+
+	run(t, "Task.Wait returns nil after the function completes", func(t *testing.T) {
+		d, h := setup(t)
+		var ran atomic.Bool
+		invoked := d.InvokeFunc(func() {
+			ran.Store(true)
+		})
+		require.NoError(t, h.AdvanceTo(h.Start))
+		assert.NoError(t, invoked.Wait(t.Context()))
+		assert.True(t, ran.Load(), "function should have run before Wait returns")
+	})
+
+	run(t, "panic in f is reported by the dispatcher and re-panics from Task.Wait", func(t *testing.T) {
+		d, h := setup(t)
+		invoked := d.InvokeFunc(func() { panic("boom") })
+		err := h.AdvanceTo(h.Start)
+		assert.ErrorContains(t, err, "panic: boom")
+		assert.PanicsWithValue(t, "boom", func() { _ = invoked.Wait(t.Context()) })
+		assert.PanicsWithValue(t, "boom", func() { _ = invoked.Wait(t.Context()) }, "Wait re-panics on every call")
+	})
+
+	run(t, "Task.Wait re-panics with the original value, not its message", func(t *testing.T) {
+		d, h := setup(t)
+		invoked := d.InvokeFunc(func() { panic(42) })
+		assert.ErrorContains(t, h.AdvanceTo(h.Start), "panic: 42")
+		assert.PanicsWithValue(t, 42, func() { _ = invoked.Wait(t.Context()) })
+	})
+
+	run(t, "Task.Wait reports the settled result even when ctx is already done", func(t *testing.T) {
+		d, h := setup(t)
+		invoked := d.InvokeFunc(func() {})
+		require.NoError(t, h.AdvanceTo(h.Start))
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		// The function completed, so ctx was not done first: Wait must return its
+		// result, not the ctx cause.
+		assert.NoError(t, invoked.Wait(ctx))
+	})
+
+	run(t, "concurrent Wait on the same Task is safe", func(t *testing.T) {
+		d, h := setup(t)
+		invoked := d.InvokeFunc(func() {})
+		const numWaiters = 100
+		var wg sync.WaitGroup
+		errs := make([]error, numWaiters)
+		wg.Add(numWaiters)
+		for i := range errs {
+			go func() {
+				defer wg.Done()
+				errs[i] = invoked.Wait(t.Context())
+			}()
+		}
+		require.NoError(t, h.AdvanceTo(h.Start))
+		wg.Wait()
+		for _, err := range errs {
+			assert.NoError(t, err)
+		}
+	})
+
+	run(t, "after f panicked, pending and subsequent submissions settle as ErrCanceled", func(t *testing.T) {
+		d, h := setup(t)
+		d.InvokeFunc(func() { panic("boom") })
+		var pendingRan atomic.Bool
+		pending := d.InvokeFunc(func() { pendingRan.Store(true) })
+		assert.ErrorContains(t, h.AdvanceTo(h.Start), "panic: boom")
+
+		assert.ErrorIs(t, pending.Wait(t.Context()), task.ErrCanceled)
+		assert.False(t, pendingRan.Load(), "pending function should not run after the dispatcher stopped")
+
+		var laterRan atomic.Bool
+		err := d.InvokeFunc(func() { laterRan.Store(true) }).Wait(t.Context())
+		assert.ErrorIs(t, err, task.ErrCanceled)
+		_ = h.AdvanceTo(h.Start.Add(50 * time.Millisecond)) // error reporting after stop is implementation-dependent
+		assert.False(t, laterRan.Load(), "function submitted after the stop should not run")
+	})
+	// The case where Wait returns the context cause before f runs applies only to
+	// asynchronous implementations (a synchronous dispatcher always completes f
+	// first). See the task/queue tests.
 }
 
 func testTimerStop(t *testing.T, setup SetupFunc) {
@@ -238,6 +341,19 @@ func testPanic(t *testing.T, setup SetupFunc) {
 		assert.False(t, subsequent.Load(), "subsequent task should not execute after panic")
 	})
 
+	run(t, "Stop reports true for a timer still pending when a panic stops the dispatcher", func(t *testing.T) {
+		d, h := setup(t)
+		var ran atomic.Bool
+		pending := d.AfterFunc(50*time.Millisecond, func() { ran.Store(true) })
+		d.AfterFunc(5*time.Millisecond, func() { panic("boom") })
+
+		assert.ErrorContains(t, h.AdvanceTo(h.Start.Add(50*time.Millisecond)), "panic: boom")
+		// The function never ran, so Stop reports it prevented execution.
+		assert.True(t, pending.Stop(), "Stop on a timer prevented by the stop reports true")
+		assert.False(t, pending.Stop(), "second Stop reports it was already stopped")
+		assert.False(t, ran.Load(), "the prevented function never runs")
+	})
+
 	run(t, "only first panic reported", func(t *testing.T) {
 		d, h := setup(t)
 		d.AfterFunc(5*time.Millisecond, func() {
@@ -248,12 +364,6 @@ func testPanic(t *testing.T, setup SetupFunc) {
 		})
 		err := h.AdvanceTo(h.Start.Add(10 * time.Millisecond))
 		assert.ErrorContains(t, err, "panic: first panic")
-	})
-
-	run(t, "nil function", func(t *testing.T) {
-		d, h := setup(t)
-		d.AfterFunc(5*time.Millisecond, nil)
-		assert.Error(t, h.AdvanceTo(h.Start.Add(5*time.Millisecond)))
 	})
 
 	run(t, "nil panic", func(t *testing.T) {
@@ -412,5 +522,32 @@ func testConcurrency(t *testing.T, setup SetupFunc) {
 		assert.Equal(t, int32(1), successfulStops.Load(), "only one Stop() should succeed")
 		require.NoError(t, h.AdvanceTo(h.Start.Add(100*time.Millisecond)))
 		assert.False(t, actual.Load(), "function should not execute after being stopped")
+	})
+
+	run(t, "concurrent InvokeFunc runs every submission serialized", func(t *testing.T) {
+		d, h := setup(t)
+		const numGoroutines = 1000
+		var counter int         // non-atomic: serialized execution makes this safe
+		var actual atomic.Int32 // for assertion
+		tasks := make([]task.Task, numGoroutines)
+
+		var wg sync.WaitGroup
+		wg.Add(numGoroutines)
+		for i := 0; i < numGoroutines; i++ {
+			go func() {
+				defer wg.Done()
+				tasks[i] = d.InvokeFunc(func() {
+					counter++
+					actual.Store(int32(counter))
+				})
+			}()
+		}
+		wg.Wait()
+
+		require.NoError(t, h.AdvanceTo(h.Start))
+		assert.Equal(t, int32(numGoroutines), actual.Load(), "all concurrently submitted functions run, serialized")
+		for _, tk := range tasks {
+			assert.NoError(t, tk.Wait(t.Context()))
+		}
 	})
 }

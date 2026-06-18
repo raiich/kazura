@@ -37,6 +37,7 @@ func (d *Dispatcher) FastForward(to time.Time) error {
 			return nil
 		}
 		if err := head.Run(); err != nil {
+			d.shutdown()
 			return err
 		}
 	}
@@ -47,6 +48,13 @@ func (d *Dispatcher) FastForward(to time.Time) error {
 func (d *Dispatcher) proceedAndDequeue(end time.Time) (*internal.PendingTask, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	// A shut-down dispatcher runs nothing further. Queued tasks (canceled by
+	// shutdown, or submitted afterward) stay so a Timer.Stop can still cancel
+	// them, but they never execute.
+	if d.ended {
+		return nil, false
+	}
 
 	head, ok := d.dequeue(end)
 	if !ok {
@@ -77,16 +85,25 @@ func (d *Dispatcher) dequeue(end time.Time) (*internal.PendingTask, bool) {
 	return head.task, true
 }
 
+func (d *Dispatcher) shutdown() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.ended = true
+	// Cancel queued tasks so InvokeFunc waiters settle. They stay in the queue
+	// (not removed) so an AfterFunc Timer.Stop still reports it prevented
+	// execution; the ended gate keeps them from running.
+	for _, entry := range d.tasks {
+		entry.task.Cancel()
+	}
+}
+
 // AfterFunc schedules a function to be executed after the specified duration.
 // Returns a Timer that can be used to cancel the scheduled task.
 // The task is inserted into the queue maintaining chronological order.
 func (d *Dispatcher) AfterFunc(duration time.Duration, f func()) task.Timer {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-
-	if d.ended {
-		return internal.StoppedTimer(true)
-	}
 
 	at := d.now.Add(duration)
 	t := internal.NewPendingTask(f)
@@ -95,6 +112,23 @@ func (d *Dispatcher) AfterFunc(duration time.Duration, f func()) task.Timer {
 		dispatcher: d,
 		task:       t,
 	}
+}
+
+// InvokeFunc schedules f to run at the current simulated time, executed by the
+// next FastForward.
+func (d *Dispatcher) InvokeFunc(f func()) task.Task {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// A Task must settle, so a shut-down dispatcher cannot leave it queued-but-unrun
+	// (Wait would block forever); settle it as canceled at submission instead.
+	if d.ended {
+		return internal.CanceledTask
+	}
+
+	t := internal.NewPendingTask(f)
+	d.enqueue(d.now, t)
+	return t
 }
 
 func (d *Dispatcher) enqueue(at time.Time, pending *internal.PendingTask) {

@@ -37,13 +37,3 @@ func (t *DispatcherTimer) Stop() bool {
 	}
 	return false
 }
-
-// StoppedTimer is a [task.Timer] whose Stop always returns its own boolean
-// value. It is used when there is nothing to cancel, e.g. AfterFunc on a
-// dispatcher that has already stopped.
-type StoppedTimer bool
-
-// Stop reports the constant value; it has no side effects.
-func (t StoppedTimer) Stop() bool {
-	return (bool)(t)
-}

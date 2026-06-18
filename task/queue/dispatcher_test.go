@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -37,6 +38,79 @@ func TestDispatcher(t *testing.T) {
 			},
 		}
 	})
+}
+
+// serveUntilStopped starts Serve and stops it by cancelling its context. It
+// returns once the dispatcher has fully stopped, so later submissions settle as
+// ErrCanceled.
+func serveUntilStopped(t *testing.T) *Dispatcher {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	d := NewDispatcher()
+	served := make(chan struct{})
+	go func() {
+		_ = d.Serve(ctx)
+		close(served)
+	}()
+	cancel()
+	<-served
+	return d
+}
+
+func TestDispatcher_InvokeFunc(t *testing.T) {
+	t.Run("Task.Wait returns the context cause when ctx ends before the worker runs f", tasktest.WithSyncTest(func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		dispatcher := NewDispatcher()
+		go func() {
+			_ = dispatcher.Serve(ctx)
+		}()
+
+		release := make(chan struct{})
+		dispatcher.InvokeFunc(func() { <-release })
+		synctest.Wait() // the worker is blocked inside the first function
+
+		waitCtx, waitCancel := context.WithTimeout(t.Context(), 1*time.Millisecond)
+		defer waitCancel()
+		err := dispatcher.InvokeFunc(func() {}).Wait(waitCtx)
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+
+		close(release)
+		cancel()
+		synctest.Wait()
+	}))
+
+	t.Run("on a stopped dispatcher, f does not run and Wait reports ErrCanceled", tasktest.WithSyncTest(func(t *testing.T) {
+		dispatcher := serveUntilStopped(t)
+
+		ran := false
+		err := dispatcher.InvokeFunc(func() { ran = true }).Wait(t.Context())
+		assert.ErrorIs(t, err, task.ErrCanceled)
+		assert.False(t, ran, "function should not run on a stopped dispatcher")
+	}))
+}
+
+func TestDispatcher_ConcurrentCancel(t *testing.T) {
+	// Concurrent submissions to a stopped dispatcher must all settle as canceled
+	// without panicking or blocking, even when they race against each other.
+	t.Run("concurrent submissions after stop settle as canceled without panicking", tasktest.WithSyncTest(func(t *testing.T) {
+		dispatcher := serveUntilStopped(t)
+
+		const numGoroutines = 200
+		var wg sync.WaitGroup
+		wg.Add(numGoroutines)
+		errs := make([]error, numGoroutines)
+		for i := range errs {
+			go func() {
+				defer wg.Done()
+				errs[i] = dispatcher.InvokeFunc(func() {}).Wait(t.Context())
+			}()
+		}
+		wg.Wait()
+
+		for _, err := range errs {
+			assert.ErrorIs(t, err, task.ErrCanceled)
+		}
+	}))
 }
 
 func TestDispatcher_Serve(t *testing.T) {

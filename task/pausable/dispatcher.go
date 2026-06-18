@@ -40,6 +40,13 @@ func (d *Dispatcher) AfterFunc(delay time.Duration, f func()) task.Timer {
 	return &trackedTimer{d: d, entry: entry}
 }
 
+// InvokeFunc submits f to the base dispatcher for immediate serialized execution.
+// Unlike AfterFunc, it is not affected by Pause / Resume: f is not buffered while
+// paused, since it carries no delay to suspend.
+func (d *Dispatcher) InvokeFunc(f func()) task.Task {
+	return d.base.InvokeFunc(f)
+}
+
 func (d *Dispatcher) stop(entry *trackedEntry) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -59,6 +66,9 @@ func (d *Dispatcher) stop(entry *trackedEntry) bool {
 }
 
 // Pause suspends all tracked timers and records their remaining durations.
+// Timers that have already fired are unaffected. A remaining duration counts only
+// the time elapsed before Pause (the paused interval is excluded) and is never
+// negative. Pause returns an error if the dispatcher is already paused.
 func (d *Dispatcher) Pause() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -81,6 +91,7 @@ func (d *Dispatcher) Pause() error {
 }
 
 // Resume reschedules all tracked timers with their remaining durations.
+// Resume returns an error if the dispatcher is not paused.
 func (d *Dispatcher) Resume() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -132,4 +143,3 @@ type trackedTimer struct {
 func (t *trackedTimer) Stop() bool {
 	return t.d.stop(t.entry)
 }
-

@@ -24,8 +24,7 @@ type Dispatcher struct {
 	errCh chan error
 	mu    sync.Mutex
 	// ended indicates whether the dispatcher has been terminated due to a panic.
-	// When true, all subsequent AfterFunc calls will be ignored to prevent
-	// further execution after an unrecoverable error.
+	// When true, safeExec runs no further function; submissions settle as canceled.
 	ended bool
 }
 
@@ -46,25 +45,43 @@ func (d *Dispatcher) AfterFunc(duration time.Duration, f func()) task.Timer {
 		d.mu.Lock()
 		defer d.mu.Unlock()
 
-		// Skip execution if dispatcher has been terminated due to a previous panic.
-		//
-		// When ended, we skip TryFire and return early. This leaves doNotFire
-		// as false, so a subsequent Stop() will return true. This is harmless
-		// because no callbacks will ever execute after the dispatcher has ended.
+		// Skip when ended: returning before TryFire leaves doNotFire false, so a
+		// later Stop reports true (it prevented execution), per the Timer.Stop
+		// contract for a function that never ran.
 		if d.ended {
 			return
 		}
-		t.TryFire(func() {
-			defer func() {
-				if r := recover(); r != nil {
-					d.ended = true
-					d.errCh <- fmt.Errorf("panic: %v\n%s", r, debug.Stack())
-				}
-			}()
-			f()
-		})
+		t.TryFire(func() { d.safeExec(f) })
 	})
 	return t
+}
+
+// InvokeFunc runs f synchronously in the caller's goroutine, serialized by the
+// mutex against AfterFunc callbacks. It returns an already-settled [task.Task].
+func (d *Dispatcher) InvokeFunc(f func()) task.Task {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.ended {
+		return internal.CanceledTask
+	}
+	return d.safeExec(f)
+}
+
+// safeExec runs f under panic recovery and returns a settled [task.Task]:
+// [internal.SucceededTask] when f completes, or on panic it marks the dispatcher
+// ended, reports the panic on errCh, and returns a [internal.PanickedTask]. The
+// caller must hold d.mu and must not call it once the dispatcher has ended.
+func (d *Dispatcher) safeExec(f func()) (result task.Task) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = internal.PanickedTask{Recovered: r}
+			d.ended = true
+			d.errCh <- fmt.Errorf("panic: %v\n%s", r, debug.Stack())
+		}
+	}()
+	f()
+	return internal.SucceededTask
 }
 
 // NewDispatcher creates a new Dispatcher that uses sync.Mutex for task serialization.

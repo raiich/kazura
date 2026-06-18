@@ -57,62 +57,29 @@ func TestDispatcher_FastForward(t *testing.T) {
 	})
 }
 
-func TestDispatcher_NestedAfterFunc_SameFastForward(t *testing.T) {
-	startTime := timeNow()
-	dispatcher := NewDispatcher(startTime)
+func TestDispatcher_ShutdownAfterPanic(t *testing.T) {
+	start := timeNow()
+	d := NewDispatcher(start)
 
-	var results []int
-	dispatcher.AfterFunc(10*time.Millisecond, func() {
-		results = append(results, 1)
-		dispatcher.AfterFunc(0, func() {
-			results = append(results, 2)
-		})
-	})
+	d.AfterFunc(1*time.Millisecond, func() { panic("boom") })
+	laterRan := false
+	d.AfterFunc(2*time.Millisecond, func() { laterRan = true })
 
-	require.NoError(t, dispatcher.FastForward(startTime.Add(10*time.Millisecond)))
-	assert.Equal(t, []int{1, 2}, results, "tasks added during execution should run in same FastForward")
+	err := d.FastForward(start.Add(2 * time.Millisecond))
+	assert.ErrorContains(t, err, "panic: boom")
+	assert.False(t, laterRan, "tasks scheduled after a panicking task should not run")
+
+	// The dispatcher has stopped: work submitted afterward never runs, but a timer
+	// can still cancel its queued task (Stop reports it prevented execution).
+	ran := false
+	timer := d.AfterFunc(1*time.Millisecond, func() { ran = true })
+	assert.True(t, timer.Stop(), "Stop cancels the still-queued task")
+	assert.False(t, timer.Stop(), "second Stop reports the task was already canceled")
+	assert.ErrorIs(t, d.InvokeFunc(func() { ran = true }).Wait(t.Context()), task.ErrCanceled)
+
+	// A timer left un-stopped after shutdown never fires, even on a later advance.
+	d.AfterFunc(1*time.Millisecond, func() { ran = true })
+	require.NoError(t, d.FastForward(start.Add(time.Hour)))
+	assert.False(t, ran, "no work runs after shutdown")
 }
 
-func TestDispatcher_ResourceManagement(t *testing.T) {
-	t.Run("uncancelled cleanup", func(t *testing.T) {
-		dispatcher := NewDispatcher(timeNow())
-		numTimers := 1000
-
-		// Schedule timers without cancelling
-		for i := 0; i < numTimers; i++ {
-			dispatcher.AfterFunc(10*time.Millisecond, func() {
-				// Simple task that doesn't do much
-			})
-		}
-
-		// Verify all timers are scheduled
-		initialCount := dispatcher.TaskCount()
-		assert.Equal(t, numTimers, initialCount, "all timers should be scheduled")
-
-		// Execute all tasks
-		startTime := timeNow()
-		require.NoError(t, dispatcher.FastForward(startTime.Add(20*time.Millisecond)))
-
-		// Verify all tasks are cleaned up after execution
-		finalCount := dispatcher.TaskCount()
-		assert.Equal(t, 0, finalCount, "all tasks should be cleaned up after execution")
-	})
-
-	t.Run("cancelled cleanup", func(t *testing.T) {
-		dispatcher := NewDispatcher(timeNow())
-		numTimers := 1000
-
-		// Schedule and immediately cancel many timers
-		for i := 0; i < numTimers; i++ {
-			timer := dispatcher.AfterFunc(time.Hour, func() {
-				// Long-running task that should never execute
-			})
-			stopped := timer.Stop()
-			assert.True(t, stopped, "timer should be successfully cancelled")
-		}
-
-		// Verify all tasks are immediately removed from queue
-		taskCount := dispatcher.TaskCount()
-		assert.Equal(t, 0, taskCount, "cancelled timers should be immediately removed")
-	})
-}

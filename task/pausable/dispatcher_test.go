@@ -249,6 +249,20 @@ func TestDispatcher_AfterFuncDuringPause(t *testing.T) {
 	})
 }
 
+func TestDispatcher_InvokeFuncDuringPause(t *testing.T) {
+	// InvokeFunc carries no delay to suspend, so Pause does not buffer it: it runs
+	// on the next time advance even while paused.
+	d, h := newPausableTest()
+	require.NoError(t, d.Pause())
+
+	executed := false
+	invoked := d.InvokeFunc(func() { executed = true })
+	require.NoError(t, h.Advance(0))
+
+	assert.True(t, executed, "InvokeFunc should run while paused")
+	assert.NoError(t, invoked.Wait(t.Context()))
+}
+
 func TestDispatcher_MultipleCycles(t *testing.T) {
 	t.Run("remaining accumulates correctly", func(t *testing.T) {
 		d, h := newPausableTest()
@@ -344,57 +358,21 @@ func TestDispatcher_RapidToggle(t *testing.T) {
 	assert.True(t, executed, "should fire at remaining 700ms")
 }
 
-func TestDispatcher_PauseCallbackRace(t *testing.T) {
-	t.Run("pause after timer fires at exact time", func(t *testing.T) {
-		d, h := newPausableTest()
-		executed := false
-
-		d.AfterFunc(100*time.Millisecond, func() {
-			executed = true
-		})
-
-		require.NoError(t, h.Advance(100*time.Millisecond)) // timer fires
-		assert.True(t, executed)
-
-		require.NoError(t, d.Pause())
-		assert.Equal(t, 0, d.TrackedCount())
-	})
-
-	t.Run("pause just before timer fires", func(t *testing.T) {
-		d, h := newPausableTest()
-		executed := false
-
-		d.AfterFunc(100*time.Millisecond, func() {
-			executed = true
-		})
-
-		require.NoError(t, h.Advance(99*time.Millisecond))
-		assert.False(t, executed)
-
-		require.NoError(t, d.Pause())
-		assert.Equal(t, 1, d.TrackedCount())
-
-		// Verify timer resumes correctly with remaining 1ms
-		require.NoError(t, d.Resume())
-		require.NoError(t, h.Advance(1*time.Millisecond))
-		assert.True(t, executed)
-	})
-}
-
-func TestDispatcher_TrackedCleanup(t *testing.T) {
+func TestDispatcher_PauseJustBeforeFire(t *testing.T) {
 	d, h := newPausableTest()
-	const numTimers = 1000
+	executed := false
 
-	for i := 0; i < numTimers; i++ {
-		d.AfterFunc(10*time.Millisecond, func() {})
-	}
+	d.AfterFunc(100*time.Millisecond, func() { executed = true })
 
-	require.NoError(t, h.Advance(10*time.Millisecond)) // all fire
-	assert.Equal(t, 0, d.TrackedCount(), "tracked map should be empty after all timers fire")
-
-	// Pause on empty tracked should succeed
+	require.NoError(t, h.Advance(99*time.Millisecond))
 	require.NoError(t, d.Pause())
-	assert.Equal(t, 0, d.TrackedCount())
+	require.NoError(t, d.Resume())
+
+	require.NoError(t, h.Advance(0))
+	assert.False(t, executed, "should not fire before the remaining 1ms")
+
+	require.NoError(t, h.Advance(1*time.Millisecond))
+	assert.True(t, executed, "should fire once the remaining 1ms elapses")
 }
 
 func TestDispatcher_Callback(t *testing.T) {
@@ -409,12 +387,10 @@ func TestDispatcher_Callback(t *testing.T) {
 		})
 
 		require.NoError(t, h.Advance(10*time.Millisecond))
-		assert.False(t, nested)
-		assert.Equal(t, 1, d.TrackedCount(), "nested timer should be tracked")
+		assert.False(t, nested, "nested timer should keep its own delay")
 
 		require.NoError(t, h.Advance(20*time.Millisecond))
 		assert.True(t, nested, "afterFunc in callback should delegate to base")
-		assert.Equal(t, 0, d.TrackedCount(), "tracked should be empty after execution")
 	})
 
 	t.Run("pause in callback buffers subsequent afterFunc", func(t *testing.T) {

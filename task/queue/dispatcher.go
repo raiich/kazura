@@ -17,20 +17,22 @@ var _ task.Dispatcher = (*Dispatcher)(nil)
 // Dispatcher, whether the prior call is still running or has already returned.
 var ErrServed = errors.New("queue: Serve already called")
 
-// Dispatcher executes Task sequentially in run loop in Serve method.
+// Dispatcher executes tasks sequentially in the run loop of its Serve method.
+// Functions submitted via AfterFunc and InvokeFunc are buffered in a channel and
+// run one at a time on the goroutine that calls Serve.
+//
+// The dispatcher has no Stop method: cancel the context passed to Serve to stop
+// it. Serve also self-stops when a task panics, after which submissions settle as
+// [task.ErrCanceled] without the context being canceled.
 type Dispatcher struct {
 	queue  chan *pendingTask
 	closed chan struct{}
 	served atomic.Bool
 }
 
-// Design decision: the dispatcher exposes no Stop method. Stopping is driven by
-// the context passed to Serve; cancel it to end the run loop. Serve also
-// self-stops when a task panics, after which submissions settle as ErrCanceled
-// without the context being canceled.
-
-// Serve execute Task(s) in loop.
-// The return value of Serve is the error that caused the dispatcher to stop.
+// Serve runs queued tasks until the context is canceled or a task panics, and
+// returns the error that caused it to stop. After it returns, submissions settle
+// as [task.ErrCanceled].
 //
 // Serve runs at most once per Dispatcher. A concurrent or subsequent call
 // returns [ErrServed] without affecting the run loop. To serve again, create a
@@ -41,6 +43,7 @@ func (d *Dispatcher) Serve(serveCtx context.Context) error {
 	}
 	defer func() {
 		close(d.closed)
+		d.drain()
 	}()
 
 	for {
@@ -63,28 +66,51 @@ func (d *Dispatcher) AfterFunc(duration time.Duration, f func()) task.Timer {
 	t.Inner = time.AfterFunc(duration, func() {
 		// Wrap f in TryFire so a Stop that wins the race against execution
 		// prevents f even after the task has been enqueued.
-		d.enqueue(internal.NewPendingTask(func() {
+		d.enqueue(d.newTaskItem(func() {
 			t.TryFire(f)
 		}))
 	})
 	return t
 }
 
-func (d *Dispatcher) enqueue(t *internal.PendingTask) {
+// InvokeFunc enqueues f for the worker (Serve) and returns a [task.Task] to wait
+// on its completion.
+func (d *Dispatcher) InvokeFunc(f func()) task.Task {
+	item := d.newTaskItem(f)
+	d.enqueue(item)
+	return item
+}
+
+func (d *Dispatcher) enqueue(item *pendingTask) {
 	select {
 	case <-d.closed:
+		item.base.Cancel()
 	default:
 		select {
 		case <-d.closed:
-		case d.queue <- d.newTaskItem(t):
+			item.base.Cancel()
+		case d.queue <- item:
 			// pass
 		}
 	}
 }
 
-func (d *Dispatcher) newTaskItem(base *internal.PendingTask) *pendingTask {
+func (d *Dispatcher) newTaskItem(f func()) *pendingTask {
 	return &pendingTask{
-		base:       base,
+		dispatcher: d,
+		base:       internal.NewPendingTask(f),
+	}
+}
+
+// drain cancels every task left in the queue after Serve has stopped.
+func (d *Dispatcher) drain() {
+	for {
+		select {
+		case nextTask := <-d.queue:
+			nextTask.base.Cancel()
+		default:
+			return
+		}
 	}
 }
 
@@ -97,5 +123,21 @@ func NewDispatcher() *Dispatcher {
 }
 
 type pendingTask struct {
-	base *internal.PendingTask
+	dispatcher *Dispatcher
+	base       *internal.PendingTask
+}
+
+func (t *pendingTask) Wait(ctx context.Context) error {
+	d := t.dispatcher
+	// A submission can win the send race against Serve's shutdown and land in the
+	// queue after Serve's own drain. Since enqueue completes before the caller
+	// obtains this Task, draining here observes such a task and cancels it, so Wait
+	// settles as ErrCanceled instead of blocking on ctx until the caller gives up.
+	select {
+	case <-d.closed:
+		d.drain()
+	default:
+		// pass
+	}
+	return t.base.Wait(ctx)
 }
