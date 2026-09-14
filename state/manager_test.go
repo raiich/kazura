@@ -346,7 +346,8 @@ func TestManager_ErrorHandling(t *testing.T) {
 		})
 
 		err := dispatcher.FastForward(time.Unix(0, 0).Add(50 * time.Millisecond))
-		assert.ErrorContains(t, err, "panic: panic called with nil argument")
+		// PanicNilError's message differs between Go releases; match the part they share.
+		assert.ErrorContains(t, err, "panic called with nil argument")
 	})
 }
 

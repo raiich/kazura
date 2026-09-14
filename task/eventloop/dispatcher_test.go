@@ -82,4 +82,3 @@ func TestDispatcher_ShutdownAfterPanic(t *testing.T) {
 	require.NoError(t, d.FastForward(start.Add(time.Hour)))
 	assert.False(t, ran, "no work runs after shutdown")
 }
-
