@@ -6,13 +6,15 @@ import (
 	"github.com/raiich/kazura/state/graph"
 )
 
+// Edge is a transition of a state graph, keyed by the event's [reflect.Type].
 type Edge[S any] graph.Edge[S, reflect.Type]
 
 // NewGraph creates a new State Graph for state.Machine.
 // It wraps the generic graph.New with reflect.Type as the event type,
 // which is used for event-based state transitions.
 // The init parameter specifies the initial state, and edges define the valid transitions.
-// Returns an error if the graph structure is invalid (e.g., unreachable states).
+// Returns an error if the graph structure is invalid (e.g., unreachable states,
+// or an event declared twice from one state as an edge or a wildcard).
 func NewGraph[S any](init S, edges ...Edge[S]) (*graph.Graph[S, reflect.Type], error) {
 	var es []graph.Edge[S, reflect.Type]
 	for _, edge := range edges {

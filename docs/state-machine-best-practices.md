@@ -41,9 +41,8 @@ type State = state.State[*VendingMachine]
 type Event = state.Event
 
 type EntryMachine = state.EntryMachine[*VendingMachine]
-type ExitMachine = state.ExitMachine[*VendingMachine]
-type AfterEntryMachine = state.AfterEntryMachine[*VendingMachine]
 type AfterFuncMachine = state.AfterFuncMachine[*VendingMachine]
+type Transition = state.Transition[State]
 
 // On helper function (simplifies state transition definitions)
 func On[E Event](from, to State) state.Edge[State] {
@@ -117,7 +116,7 @@ All states must implement the `State` interface.
 ```go
 type InitialState struct{}
 
-func (s InitialState) Entry(machine *EntryMachine, event Event) {
+func (s InitialState) Entry(machine *EntryMachine, event Event) state.Command {
     // Processing when entering the state
     if event != nil {
         log.Info("enter InitialState", "event", event)
@@ -125,6 +124,7 @@ func (s InitialState) Entry(machine *EntryMachine, event Event) {
 
     // Data initialization
     machine.Value().Coins = 0
+    return nil
 }
 ```
 
@@ -132,6 +132,7 @@ func (s InitialState) Entry(machine *EntryMachine, event Event) {
 - `Entry` method is called every time the state is entered
 - `event` parameter is the triggered event (`nil` on Launch)
 - Access data via `machine.Value()`
+- The return value is `state.Trigger(event)` to process an event next, `state.Stop()` to stop the machine, or `nil` to stay
 
 ### State Interface Customization (Optional)
 
@@ -148,8 +149,9 @@ type State interface {
 
 type RunningState struct{}
 
-func (s RunningState) Entry(machine *state.EntryMachine[*Data], event state.Event) {
+func (s RunningState) Entry(machine *state.EntryMachine[*Data], event state.Event) state.Command {
     // State initialization
+    return nil
 }
 
 func (s RunningState) HandleInput(sc *Scene, input ui.Input) {
@@ -224,96 +226,55 @@ var stateGraph = must.Must(state.NewGraph[State](
 Use timers to automatically trigger events after a specified duration.
 
 ```go
-func (s WaitingState) Entry(machine *EntryMachine, event Event) {
+func (s WaitingState) Entry(machine *EntryMachine, event Event) state.Command {
     vendingMachine := machine.Value()
 
     // Trigger timeout event after 10 seconds
-    machine.AfterFunc(vendingMachine.Dispatcher, 10*time.Second, func(machine *AfterFuncMachine) {
+    must.NoError(machine.AfterFunc(vendingMachine.Dispatcher, 10*time.Second, func(machine *AfterFuncMachine) {
         must.NoError(machine.Trigger(DoneEvent("timeout")))
-    })
+    }))
+    return nil
 }
 ```
 
 **Features**:
 - When state transitions occur, timers registered in that state are automatically canceled
+- Timer callbacks run between transitions, so they may `Trigger` or `Stop` through the `AfterFuncMachine`
 - Synchronization is guaranteed via `Dispatcher` (safe for concurrent processing)
 - In tests, you can advance time with `Dispatcher.FastForward()`
 
-### Immediate Post-Processing with AfterEntry
+### Immediate Post-Processing with the Entry Return Value
 
-Register processing to execute immediately after the Entry method.
+Return `state.Trigger(event)` to have the machine process the event once `Entry` returns, or `nil` to stay.
 
 ```go
-func (s PouringState) Entry(machine *EntryMachine, event state.Event) {
+func (s PouringState) Entry(machine *EntryMachine, event state.Event) state.Command {
     log.Info("pouring", "item", event.(*ButtonEvent).Item)
 
-    must.NoError(machine.AfterEntry(func(machine *AfterEntryMachine) {
-        // Executed immediately after Entry completes
-        must.NoError(machine.Trigger(DoneEvent("done")))
-    }))
+    // The machine performs this transition once Entry returns
+    return state.Trigger(DoneEvent("done"))
 }
 ```
 
 **Use Cases**:
 - When you want to transition to the next state immediately after Entry initialization
-- Use AfterEntry because calling `Trigger` directly within Entry causes re-entry issues
+- `Trigger` and `Stop` cannot be called from `Entry` or an exit action (they report that the machine is in a transition); returning `state.Trigger` is how a state moves on
+- To stop from `Entry`, return `state.Stop()`; the machine stops once `Entry` returns
 
 #### Execution Order in Chained Transitions
 
-When an AfterEntry callback calls `Trigger`, the destination state's Entry executes immediately, but its AfterEntry callback does not run right away. Instead, it runs after the current AfterEntry callback finishes.
+The machine processes one event at a time, so transitions never nest. `Trigger` runs the exit action of the state being left, notifies the `Tracer`, calls the destination `Entry`, and repeats with the event `Entry` returned through `state.Trigger` until one returns `nil`.
 
-Example: State A → State B → State C, where each transition is driven by AfterEntry:
+Example: State A → State B → State C, where State B's Entry returns the Trigger for the second transition:
 
 ```
-1. State A: Entry              — registers AfterEntry callback X
-2. callback X runs             — calls Trigger(event1)
-3.   State B: Exit → State C: Entry   — registers AfterEntry callback Y
-4.   callback X continues      — remaining code after Trigger(event1)
-5. callback Y runs             — State C's AfterEntry
+1. Trigger(event1)
+2.   State A: exit action → Trace → State B: Entry — returns Trigger(event2)
+3.   State B: exit action → Trace → State C: Entry — returns nil
+4. Trigger returns
 ```
 
-Between State C's Entry (step 3) and its AfterEntry callback Y (step 5), the remaining code of callback X (step 4) runs.
-
-```mermaid
-sequenceDiagram
-    participant a as Caller
-    participant m as StateMachine
-    participant sA as State A
-    participant sC as State C
-
-    a ->> m: Trigger(event)
-    activate m
-
-    m ->> sA: Entry
-    activate sA
-    Note over sA: registers AfterEntry callback X
-    sA -->> m: done
-    deactivate sA
-
-    m ->> sA: callback X
-    activate sA
-    Note over sA: calls Trigger(event1)
-
-    m ->> sC: Entry
-    activate sC
-    Note over sC: registers AfterEntry callback Y
-    sC -->> m: done
-    deactivate sC
-
-    Note over sA: remaining code of callback X
-    sA -->> m: done
-    deactivate sA
-
-    m ->> sC: callback Y
-    activate sC
-    sC -->> m: done
-    deactivate sC
-
-    m -->> a: done
-    deactivate m
-```
-
-**Key Point**: If your AfterEntry callback has no code after the `Trigger` call (which is the typical pattern), this ordering has no practical effect. It only matters if you have logic after `Trigger` in the same callback.
+**Key Point**: The `Launch` or `Trigger` that started the chain returns the first failure of the chain (an event with no transition or a `*Guarded`), leaving the machine in the state whose `Entry` returned the failing event.
 
 ### Dispatcher Selection
 
@@ -349,11 +310,11 @@ dispatcher := queue.NewDispatcher(ctx)
 Perform validation before exiting a state and block transitions if conditions are not met.
 
 ```go
-func (s WaitingState) Entry(machine *EntryMachine, event Event) {
+func (s WaitingState) Entry(machine *EntryMachine, event Event) state.Command {
     vendingMachine := machine.Value()
 
     // Validation when exiting state
-    must.NoError(machine.OnExit(func(machine *ExitMachine, event state.Event) *state.Guarded {
+    must.NoError(machine.OnExit(func(event Event) *state.Guarded {
         switch e := event.(type) {
         case CoinEvent:
             return nil // Always allow coin insertion
@@ -365,6 +326,7 @@ func (s WaitingState) Entry(machine *EntryMachine, event Event) {
         }
         return nil
     }))
+    return nil
 }
 
 // Helper function
@@ -390,8 +352,9 @@ err := machine.Trigger(&ButtonEvent{Item: "coffee"})
 
 **Key Points**:
 - `OnExit` is registered in each Entry and executed when exiting that state
-- Returning `*state.Guarded` blocks the state transition and returns an error
+- Returning `*state.Guarded` blocks the state transition and returns it to the caller as is; the machine stays in the state and the same exit action guards the next event
 - Returning `nil` allows the transition
+- On `Stop` the exit action runs with a `nil` event and cannot block the stop; the `*state.Guarded` it returns is reported to the `Tracer`
 
 ## Observability
 
@@ -401,7 +364,13 @@ Use `state.WithTracer` to observe every state transition from outside the machin
 
 ```go
 type Tracer[S any] interface {
-    Trace(fromState, toState S, event Event)
+    Trace(t Transition[S])
+}
+
+type Transition[S any] struct {
+    From, To S
+    Event    Event
+    Guarded  *Guarded
 }
 ```
 
@@ -418,7 +387,8 @@ import (
 
 type transitionLogger struct{}
 
-func (transitionLogger) Trace(from, to State, event state.Event) {
+func (transitionLogger) Trace(t Transition) {
+    from, to, event := t.From, t.To, t.Event
     slog.Info("transition",
         "from", fmt.Sprintf("%T", from),
         "to", fmt.Sprintf("%T", to),
@@ -428,16 +398,16 @@ func (transitionLogger) Trace(from, to State, event state.Event) {
 machine := state.NewMachine(stateGraph, &data, state.WithTracer[State](transitionLogger{}))
 ```
 
-`State` here is the project's type alias for `state.State[*Data]`. The
-explicit `[State]` on `WithTracer` is required because Go cannot infer `S`
-from the receiver type of `transitionLogger.Trace` alone.
+`State` here is the project's type alias for `state.State[*Data]` and
+`Transition` for `state.Transition[State]`. The explicit `[State]` on
+`WithTracer` is required because Go cannot infer `S` from the receiver type of
+`transitionLogger.Trace` alone.
 
 **Call Semantics**:
-- Called after an exit-action succeeds and before the destination state's `Entry` is invoked
-- On `Launch`, `fromState` is the zero value of `S` and `event` is `nil`
-- On `Stop`, `fromState` is the state the machine was in, `toState` is the zero value of `S`, and `event` is `nil`
-- **Not** called when a transition is blocked by a `Guarded` error from an exit-action
-- **Not** called for the destination side when `Stop` is invoked from within an exit-action (the Stop-side trace is still recorded)
+- Called after an exit action succeeds and before the destination state's `Entry` is invoked
+- On `Launch`, `From` is the zero value of `S` and `Event` is `nil`
+- On `Stop`, `From` is the state the machine was in, `To` is the zero value of `S`, `Event` is `nil`, and `Guarded` carries the guard the stop overrode
+- **Not** called when a transition is blocked by a `Guarded` from an exit action, or when an event has no transition
 - Recorded even if the destination state's `Entry` panics — useful for post-mortem debugging
 - Invoked synchronously on the Machine's goroutine; implementations must not block
 
@@ -446,7 +416,7 @@ from the receiver type of `transitionLogger.Trace` alone.
 - Generating debug traces or timelines for analysis
 - Collecting transition metrics (e.g., transition counts per state pair)
 
-See [examples/vending-machine](../examples/vending-machine/) for a working example.
+See [examples/vending-machine](../examples/vending-machine/main.go) for a working example.
 
 ## Architecture Patterns
 
@@ -512,11 +482,12 @@ type Data struct {
 
 **Coordination**:
 ```go
-func (s RunningState) Entry(machine *EntryMachine, event Event) {
+func (s RunningState) Entry(machine *EntryMachine, event Event) state.Command {
     data := machine.Value()
 
     // Launch Character state machine
     must.NoError(data.Character.Ready())
+    return nil
 }
 ```
 
@@ -613,7 +584,7 @@ stateDiagram-v2
 
 ### Common Mistakes
 
-1. **Direct Trigger in Entry**: Use `AfterEntry` instead of calling `Trigger` directly
+1. **Direct Trigger in Entry**: `Trigger` cannot be called from `Entry` (the machine is in a transition); return `state.Trigger(event)` from `Entry` instead
 2. **Timers without Dispatcher**: Use `machine.AfterFunc` instead of `time.AfterFunc`
 3. **Forgetting OnExit Registration**: Don't forget to register guard conditions in `Entry`
 4. **Missing State Transition Graph Definitions**: Explicitly define all transitions
@@ -632,4 +603,4 @@ Solutions when state count grows too large:
 
 ### References
 
-- [vending-machine implementation example](../examples/vending-machine/)
+- [vending-machine implementation example](../examples/vending-machine/main.go)

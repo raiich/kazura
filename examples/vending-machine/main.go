@@ -31,15 +31,17 @@ var stateGraph = must.Must(state.NewGraph[State](
 type InitialState struct {
 }
 
-func (s InitialState) Entry(machine *EntryMachine, event Event) {
+func (s InitialState) Entry(machine *EntryMachine, event Event) state.Command {
 	machine.Value().Coins = 0 // reset coins
+	return nil
 }
 
 // transitionLogger implements state.Tracer and logs every state transition.
 // Using WithTracer keeps each Entry method free of transition-logging boilerplate.
 type transitionLogger struct{}
 
-func (transitionLogger) Trace(from, to State, event state.Event) {
+func (transitionLogger) Trace(t Transition) {
+	from, to, event := t.From, t.To, t.Event
 	log.Info("transition",
 		"from", fmt.Sprintf("%T", from),
 		"to", fmt.Sprintf("%T", to),
@@ -52,7 +54,7 @@ func (transitionLogger) Trace(from, to State, event state.Event) {
 type WaitingState struct {
 }
 
-func (s WaitingState) Entry(machine *EntryMachine, event Event) {
+func (s WaitingState) Entry(machine *EntryMachine, event Event) state.Command {
 	vendingMachine := machine.Value()
 
 	switch event.(type) {
@@ -62,7 +64,7 @@ func (s WaitingState) Entry(machine *EntryMachine, event Event) {
 	}
 
 	// Set up exit guard to validate item purchases
-	must.NoError(machine.OnExit(func(machine *ExitMachine, event state.Event) *state.Guarded {
+	must.NoError(machine.OnExit(func(event Event) *state.Guarded {
 		switch e := event.(type) {
 		case CoinEvent:
 			return nil // nothing to do
@@ -76,22 +78,21 @@ func (s WaitingState) Entry(machine *EntryMachine, event Event) {
 	}))
 
 	// Set up timeout to return to initial state
-	machine.AfterFunc(vendingMachine.Dispatcher, 10*time.Second, func(machine *AfterFuncMachine) {
+	must.NoError(machine.AfterFunc(vendingMachine.Dispatcher, 10*time.Second, func(machine *AfterFuncMachine) {
 		must.NoError(machine.Trigger(DoneEvent("timeout")))
-	})
+	}))
+	return nil
 }
 
 // PouringState represents the state where the machine is dispensing the selected item.
 // Automatically transitions back to initial state when pouring is complete.
 type PouringState struct{}
 
-func (s PouringState) Entry(machine *EntryMachine, event state.Event) {
+func (s PouringState) Entry(machine *EntryMachine, event state.Event) state.Command {
 	log.Info("pouring", "item", event.(*ButtonEvent).Item)
 
-	must.NoError(machine.AfterEntry(func(machine *AfterEntryMachine) {
-		// done pouring
-		must.NoError(machine.Trigger(DoneEvent("done")))
-	}))
+	// done pouring: the machine performs this transition once Entry returns
+	return state.Trigger(DoneEvent("done"))
 }
 
 // CoinEvent represents a coin insertion event.

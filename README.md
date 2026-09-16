@@ -47,6 +47,8 @@ import (
 // Type aliases for better readability
 type State = state.State[*VendingMachine]
 type Event = state.Event
+type EntryMachine = state.EntryMachine[*VendingMachine]
+type AfterFuncMachine = state.AfterFuncMachine[*VendingMachine]
 
 // Define the state graph
 stateGraph := state.NewGraph[State](
@@ -74,18 +76,21 @@ stateDiagram-v2
 
 Each state defines transition behavior in its `Entry` method.
 
+`Entry` returns what the machine does next: `state.Trigger(event)` to process an event, or `nil` to stay.
+
 ```go
 // Initial state: machine is idle
 type InitialState struct{}
 
-func (s InitialState) Entry(machine *EntryMachine, event Event) {
+func (s InitialState) Entry(machine *EntryMachine, event Event) state.Command {
     machine.Value().Coins = 0  // Reset coin count
+    return nil
 }
 
 // Waiting state: accepts coins and item selection
 type WaitingState struct{}
 
-func (s WaitingState) Entry(machine *EntryMachine, event Event) {
+func (s WaitingState) Entry(machine *EntryMachine, event Event) state.Command {
     vendingMachine := machine.Value()
 
     // Handle coin events
@@ -96,7 +101,7 @@ func (s WaitingState) Entry(machine *EntryMachine, event Event) {
     }
 
     // Guard conditions: conditionally control state transitions
-    machine.OnExit(func(machine *ExitMachine, event Event) *state.Guarded {
+    machine.OnExit(func(event Event) *state.Guarded {
         switch e := event.(type) {
         case *ButtonEvent:
             // Coffee requires 2 coins
@@ -113,19 +118,17 @@ func (s WaitingState) Entry(machine *EntryMachine, event Event) {
     machine.AfterFunc(vendingMachine.Dispatcher, 10*time.Second, func(machine *AfterFuncMachine) {
         machine.Trigger(DoneEvent("timeout"))
     })
+    return nil
 }
 
 // Pouring state: dispense the selected item
 type PouringState struct{}
 
-func (s PouringState) Entry(machine *EntryMachine, event Event) {
+func (s PouringState) Entry(machine *EntryMachine, event Event) state.Command {
     slog.Info("pouring", "item", event.(*ButtonEvent).Item)
 
-    // Asynchronous processing: executed after state transition
-    machine.AfterEntry(func(machine *AfterEntryMachine) {
-        // Pouring complete
-        machine.Trigger(DoneEvent("done"))
-    })
+    // Pouring complete: the machine performs this transition once Entry returns
+    return state.Trigger(DoneEvent("done"))
 }
 ```
 
@@ -187,7 +190,7 @@ This example demonstrates the following kazura features:
 - **State Transition Control**: Implement transition behavior in each state's `Entry` method
 - **Guard Conditions**: Control conditional state transitions with `OnExit`
 - **Timeout Handling**: Time-based automatic transitions with `AfterFunc`
-- **Asynchronous Processing**: Post-transition async processing with `AfterEntry`
+- **Chained Transitions**: Drive the next transition with the `state.Trigger` that `Entry` returns
 - **Event Dispatching**: Event ordering control with `eventloop.Dispatcher`
 - **Virtual Time**: Time control for testing with `FastForward`
 - **State Transition Tracing**: Observe transitions via `state.WithTracer` for logging and debugging

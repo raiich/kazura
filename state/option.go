@@ -21,22 +21,23 @@ func WithTracer[S any](t Tracer[S]) Option[S] {
 // Tracer observes state transitions for logging or debugging purposes.
 // S is the state type used by the Machine.
 //
-// Trace is called after an exit-action (if any) succeeds and before the
-// Entry method of the destination state is invoked.
+// Trace is called after the exit action and before the Entry of the destination,
+// and on Launch and Stop. A blocked transition or an event with no transition is
+// not traced; it is returned to the caller.
 //
-// Special cases:
-//   - On the initial transition triggered by Launch, fromState is the zero
-//     value of S and event is nil.
-//   - On Stop, fromState is the state the machine was in, toState is the
-//     zero value of S, and event is nil.
-//
-// Trace is not called when the transition is blocked by a Guarded error
-// returned from an exit-action, or when Stop is invoked from within an
-// exit-action (the destination-side Trace for the blocked transition is
-// suppressed; the Stop-side Trace is still recorded).
-//
-// Trace is invoked synchronously on the Machine's goroutine. Implementations
-// must not block; long-running work should be offloaded.
+// Trace runs synchronously on the Machine's goroutine, inside the transition, and
+// must not block; Launch, Trigger and Stop return an error from it.
 type Tracer[S any] interface {
-	Trace(fromState, toState S, event Event)
+	Trace(t Transition[S])
+}
+
+// Transition is one transition reported to a [Tracer]:
+//
+//   - From zero: the initial transition of [Machine.Launch].
+//   - To zero: a stop; From is the last state and Event is nil. Guarded is the
+//     guard the exit action returned and the stop overrode, if any.
+type Transition[S any] struct {
+	From, To S
+	Event    Event
+	Guarded  *Guarded
 }

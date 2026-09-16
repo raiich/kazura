@@ -2,6 +2,8 @@ package state_test
 
 import (
 	"errors"
+	"reflect"
+	"runtime"
 	"testing"
 	"time"
 
@@ -9,1589 +11,1198 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/raiich/kazura/state"
+	"github.com/raiich/kazura/state/graph"
 	"github.com/raiich/kazura/task/eventloop"
 )
 
+// Verification policy (primary; the other test files point here):
+//
+//	Definition of done:
+//	  1. Transitions do not nest: Machine.Trigger / Stop from Entry, an exit action or Trace
+//	     return ErrInTransition, Entry returns the Command (an event to process or a stop) the
+//	     machine runs after it returns, timer callbacks run between transitions and may
+//	     trigger or stop through AfterFuncMachine or Machine, and Machine.Launch returns
+//	     ErrInCallback from any callback.
+//	  2. A handle of a left visit returns ErrStateLeft and attaches nothing to the machine;
+//	     until then it is still valid inside the visit's exit action.
+//	  3. A *Guarded from OnExit is returned as is (not wrapped), keeps the state, and the same
+//	     OnExit guards the next event.
+//	  4. Leaving cancels the visit's timers and runs OnExit once; Stop runs it with a nil
+//	     event, cannot be blocked, and reports the overridden Guarded in its Transition.
+//	  5. A failure of a Command returned by Entry (a nil event, no transition, Guarded, not
+//	     constructed by the package) is returned by the Launch / Trigger that ran the chain; a failing
+//	     Trigger inside a timer callback returns it there. The Tracer records only
+//	     transitions, launches and stops that happened.
+//	  6. Inherited behavior (lifecycle, transition lookup, wildcards, timer cancellation,
+//	     Tracer call points) is unchanged: examples/vending-machine reproduces
+//	     its testdata/expected.log.txt.
+//	  7. The library does not panic: NewMachine accepts a nil graph, or one without an initial
+//	     node, and Launch returns ErrNilGraph; Stop succeeds after Entry or the exit action panicked.
+//	Falsification condition: a port needs to transition in the middle of Entry and continue
+//	  in the same Entry afterward (Entry returning the event does not hold).
+//	Guaranteed: returned errors (errors.Is / errors.As), CurrentState after a transition, the
+//	  sequence of Transitions the Tracer receives, whether timers fire, callback call counts
+//	  and order.
+//	Not guaranteed: concurrent use from several goroutines (serializing on a Dispatcher is the
+//	  caller's job), a Dispatcher that fires timers reentrantly from a callback, transitions
+//	  and reuse after a callback panicked (only Stop is guaranteed), exhaustive graph
+//	  validation (state/graph; graph_test.go covers what the Machine uses), real-time timer accuracy
+//	  (the synchronous model driven by eventloop's FastForward only).
+//	Not automated: none.
+//	Strength check required: "Stop runs the exit action with a nil event",
+//	  "Launch, Trigger and Stop from inside Entry are refused",
+//	  "Launch, Trigger and Stop from inside the exit action are refused",
+//	  "Machine.Launch from a timer callback returns ErrInCallback",
+//	  "Trigger returns the failure of a chained event" (the failure reaches the caller)
+
 func TestNewMachine(t *testing.T) {
+	t.Run("nil graph is accepted and reported by Launch", func(t *testing.T) {
+		machine := state.NewMachine[State](nil, &TestValue{})
 
-	t.Run("NewMachine with nil graph panics", func(t *testing.T) {
-		value := &TestValue{Map: make(map[string]any)}
-
-		assert.Panics(t, func() {
-			state.NewMachine[State](nil, value)
-		})
+		assert.ErrorIs(t, machine.Launch(), state.ErrNilGraph)
 	})
 
-	t.Run("NewMachine with valid parameters succeeds", func(t *testing.T) {
-		value := &TestValue{Map: make(map[string]any)}
-		graph, err := state.NewGraph(&TestState{name: "initial"})
+	t.Run("a graph without an initial node is reported by Launch", func(t *testing.T) {
+		machine := state.NewMachine[State](&graph.Graph[State, reflect.Type]{}, &TestValue{})
+
+		assert.ErrorIs(t, machine.Launch(), state.ErrNilGraph)
+	})
+
+	t.Run("valid graph and value succeeds", func(t *testing.T) {
+		value := &TestValue{Map: map[string]any{"key": "value"}}
+		g, err := state.NewGraph[State](&TestState{name: "initial"})
 		require.NoError(t, err)
 
-		machine := state.NewMachine(graph, value)
-		assert.NotNil(t, machine)
+		machine := state.NewMachine(g, value)
+
+		assert.Equal(t, value, machine.Value())
 	})
 }
 
-func TestMachine_LaunchAndStop(t *testing.T) {
-	t.Run("Complete lifecycle flow", func(t *testing.T) {
-		value := &TestValue{Map: make(map[string]any)}
-		initialState := &TestState{name: "initial"}
-		graph, err := state.NewGraph(initialState)
+func TestMachine_Launch(t *testing.T) {
+	type NextEvent struct{}
+	type UndefinedEvent struct{}
+
+	t.Run("Launch enters the initial state with a nil event", func(t *testing.T) {
+		value := &TestValue{}
+		var entries []Event
+		var entryValue *TestValue
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, event Event) state.Command {
+				entries = append(entries, event)
+				entryValue = m.Value()
+				return nil
+			},
+		}
+		g, err := state.NewGraph[State](initial)
 		require.NoError(t, err)
 
-		machine := state.NewMachine(graph, value)
-
-		// Phase 1: Before launch
-		_, err = machine.CurrentState()
-		assert.ErrorContains(t, err, "not launched")
-
-		// Phase 2: Launch
+		machine := state.NewMachine(g, value)
 		require.NoError(t, machine.Launch())
 
-		currentState, err := machine.CurrentState()
-		require.NoError(t, err)
-		assert.Equal(t, initialState, currentState)
-
-		// Phase 3: Duplicate launch should fail
-		err = machine.Launch() //
-		assert.ErrorContains(t, err, "already launched")
-
-		// Phase 4: Stop
-		err = machine.Stop() //
-		assert.NoError(t, err)
-
-		// Phase 5: After stop
-		_, err = machine.CurrentState()
-		assert.ErrorContains(t, err, "not launched")
-
-		// Phase 6: Duplicate stop should fail
-		err = machine.Stop() //
-		assert.ErrorContains(t, err, "already stopped")
+		assert.Equal(t, []Event{nil}, entries)
+		assert.Same(t, value, entryValue)
 	})
 
+	t.Run("CurrentState before Launch returns ErrNotLaunched", func(t *testing.T) {
+		g, err := state.NewGraph[State](&TestState{name: "initial"})
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		_, err = machine.CurrentState()
+
+		assert.ErrorIs(t, err, state.ErrNotLaunched)
+	})
+
+	t.Run("duplicate Launch returns ErrAlreadyLaunched", func(t *testing.T) {
+		entryCount := 0
+		initial := &TestState{
+			name: "initial",
+			entry: func(*EntryMachine, Event) state.Command {
+				entryCount++
+				return nil
+			},
+		}
+		g, err := state.NewGraph[State](initial)
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+
+		assert.ErrorIs(t, machine.Launch(), state.ErrAlreadyLaunched)
+		assert.Equal(t, 1, entryCount)
+	})
+
+	t.Run("Launch after Stop enters the initial state again", func(t *testing.T) {
+		var entries []Event
+		initial := &TestState{
+			name: "initial",
+			entry: func(_ *EntryMachine, event Event) state.Command {
+				entries = append(entries, event)
+				return nil
+			},
+		}
+		next := &TestState{name: "next"}
+		g, err := state.NewGraph[State](initial, On[NextEvent](initial, next))
+		require.NoError(t, err)
+
+		tracer := &recordingTracer{}
+		machine := state.NewMachine(g, &TestValue{}, state.WithTracer[State](tracer))
+		require.NoError(t, machine.Launch())
+		require.NoError(t, machine.Trigger(NextEvent{}))
+		require.NoError(t, machine.Stop())
+
+		require.NoError(t, machine.Launch())
+		assert.Equal(t, []Event{nil, nil}, entries)
+		require.Len(t, tracer.calls, 4)
+		assert.Equal(t, Transition{To: initial}, tracer.calls[3])
+	})
+
+	t.Run("Launch processes the event returned by the initial Entry", func(t *testing.T) {
+		next := &TestState{name: "next"}
+		initial := &TestState{
+			name: "initial",
+			entry: func(*EntryMachine, Event) state.Command {
+				return state.Trigger(NextEvent{})
+			},
+		}
+		g, err := state.NewGraph[State](initial, On[NextEvent](initial, next))
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+
+		current, err := machine.CurrentState()
+		require.NoError(t, err)
+		assert.Equal(t, next, current)
+	})
+
+	t.Run("Launch returns the failure of the event the initial Entry returned", func(t *testing.T) {
+		initial := &TestState{
+			name: "initial",
+			entry: func(*EntryMachine, Event) state.Command {
+				return state.Trigger(UndefinedEvent{})
+			},
+		}
+		g, err := state.NewGraph[State](initial)
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		assert.ErrorIs(t, machine.Launch(), state.ErrNoTransition)
+
+		current, err := machine.CurrentState()
+		require.NoError(t, err)
+		assert.Equal(t, initial, current)
+	})
 }
 
 func TestMachine_Trigger(t *testing.T) {
-	type StartEvent struct{}
 	type NextEvent struct{}
-
-	t.Run("Trigger behavior and validation", func(t *testing.T) {
-		value := &TestValue{Map: make(map[string]any)}
-
-		initialState := &TestState{name: "initial"}
-		nextState := &TestState{name: "next"}
-
-		graph, err := state.NewGraph[State](
-			initialState,
-			On[NextEvent](initialState, nextState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-
-		// Error case 1: Before launch
-		err = machine.Trigger(StartEvent{})
-		assert.ErrorContains(t, err, "not launched")
-
-		// Launch the machine
-		require.NoError(t, machine.Launch())
-
-		// Error case 2: Nil event
-		err = machine.Trigger(nil) //
-		assert.ErrorContains(t, err, "event cannot be nil")
-
-		// Error case 3: Invalid event (no transition defined)
-		err = machine.Trigger(StartEvent{}) //
-		assert.ErrorContains(t, err, "no transition found")
-
-		// Success case: Valid transition
-		require.NoError(t, machine.Trigger(NextEvent{}))
-
-		currentState, err := machine.CurrentState()
-		require.NoError(t, err)
-		assert.Equal(t, nextState, currentState)
-
-		// Error case 4: No transition from next state
-		err = machine.Trigger(NextEvent{}) //
-		assert.ErrorContains(t, err, "no transition found")
-	})
-}
-
-func TestEntryMachine_Value(t *testing.T) {
-	t.Run("Value returns machine data", func(t *testing.T) {
-		expectedData := map[string]any{"key": "value", "number": 123}
-		value := &TestValue{Map: expectedData}
-
-		var retrievedValue *TestValue
-		testState := &TestState{
-			name: "test",
-			entry: func(machine *EntryMachine, event Event) {
-				retrievedValue = machine.Value()
-			},
-		}
-
-		graph, err := state.NewGraph(testState)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		assert.Equal(t, value, retrievedValue)
-		assert.Equal(t, expectedData, retrievedValue.Map)
-	})
-}
-
-func TestEntryMachine_AfterFunc(t *testing.T) {
-	type TimerEvent struct{}
-	baseTime := time.Unix(0, 0)
-
-	t.Run("AfterFunc schedules timer correctly", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
-		value := &TestValue{Map: make(map[string]any)}
-
-		var timerExecuted bool
-		timerState := &TestState{
-			name: "timer",
-			entry: func(machine *EntryMachine, event Event) {
-				machine.AfterFunc(dispatcher, 5*time.Second, func(machine *state.AfterFuncMachine[*TestValue]) {
-					timerExecuted = true
-				})
-			},
-		}
-
-		graph, err := state.NewGraph(timerState)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-		// Timer should not have executed yet
-		assert.False(t, timerExecuted)
-
-		// Fast forward time
-		require.NoError(t, dispatcher.FastForward(baseTime.Add(5*time.Second)))
-		// Timer should have executed
-		assert.True(t, timerExecuted)
-	})
-
-	t.Run("Timer cancellation on state transition", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
-		value := &TestValue{Map: make(map[string]any)}
-
-		var timerExecuted bool
-		timerState := &TestState{
-			name: "timer",
-			entry: func(machine *EntryMachine, event Event) {
-				machine.AfterFunc(dispatcher, 10*time.Second, func(machine *state.AfterFuncMachine[*TestValue]) {
-					timerExecuted = true
-				})
-			},
-		}
-		nextState := &TestState{name: "next"}
-
-		graph, err := state.NewGraph[State](
-			timerState,
-			On[TimerEvent](timerState, nextState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		// Transition to next state before timer fires
-		require.NoError(t, machine.Trigger(TimerEvent{}))
-
-		// Fast forward past timer time
-		require.NoError(t, dispatcher.FastForward(baseTime.Add(15*time.Second)))
-		// Timer should not have executed due to state transition
-		assert.False(t, timerExecuted)
-	})
-
-	t.Run("EntryMachine.AfterFunc is called from AfterEntry's callback and timer is fired", func(t *testing.T) {
-		// Trigger is not called in AfterFunc's callback
-		dispatcher := eventloop.NewDispatcher(baseTime)
-		value := &TestValue{Map: make(map[string]any)}
-
-		var timerExecuted bool
-		var afterEntryExecuted bool
-		testState := &TestState{
-			name: "test",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.AfterEntry(func(_ *state.AfterEntryMachine[*TestValue]) {
-					afterEntryExecuted = true
-					machine.AfterFunc(dispatcher, 3*time.Second, func(machine *state.AfterFuncMachine[*TestValue]) {
-						timerExecuted = true
-					})
-				})
-				require.NoError(t, err)
-			},
-		}
-
-		graph, err := state.NewGraph(testState)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		// AfterEntry should have executed
-		assert.True(t, afterEntryExecuted)
-		// Timer should not have executed yet
-		assert.False(t, timerExecuted)
-
-		// Fast forward to execute timer
-		require.NoError(t, dispatcher.FastForward(baseTime.Add(3*time.Second)))
-		// Timer should have executed
-		assert.True(t, timerExecuted)
-	})
-
-	t.Run("EntryMachine.AfterFunc is called from AfterEntry's callback and timer is cancelled", func(t *testing.T) {
-		// Trigger is called in AfterFunc's callback
-		type NextEvent struct{}
-		dispatcher := eventloop.NewDispatcher(baseTime)
-		value := &TestValue{Map: make(map[string]any)}
-
-		var timerExecuted bool
-		var afterEntryExecuted bool
-		fromState := &TestState{
-			name: "from",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.AfterEntry(func(_ *state.AfterEntryMachine[*TestValue]) {
-					afterEntryExecuted = true
-					machine.AfterFunc(dispatcher, 5*time.Second, func(machine *state.AfterFuncMachine[*TestValue]) {
-						timerExecuted = true
-					})
-				})
-				require.NoError(t, err)
-			},
-		}
-		toState := &TestState{name: "to"}
-
-		graph, err := state.NewGraph[State](
-			fromState,
-			On[NextEvent](fromState, toState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		// AfterEntry should have executed
-		assert.True(t, afterEntryExecuted)
-		// Timer should not have executed yet
-		assert.False(t, timerExecuted)
-
-		// Trigger transition before timer fires
-		require.NoError(t, machine.Trigger(NextEvent{}))
-
-		// Fast forward past timer time
-		require.NoError(t, dispatcher.FastForward(baseTime.Add(10*time.Second)))
-		// Timer should not have executed due to state transition
-		assert.False(t, timerExecuted)
-	})
-
-	t.Run("EntryMachine.AfterFunc is called from OnExit's callback and timer is cancelled", func(t *testing.T) {
-		// OnExit returns nil
-		type NextEvent struct{}
-		dispatcher := eventloop.NewDispatcher(baseTime)
-		value := &TestValue{Map: make(map[string]any)}
-
-		var timerExecuted bool
-		var exitExecuted bool
-		fromState := &TestState{
-			name: "from",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.OnExit(func(_ *state.ExitMachine[*TestValue], event Event) *state.Guarded {
-					exitExecuted = true
-					machine.AfterFunc(dispatcher, 3*time.Second, func(machine *state.AfterFuncMachine[*TestValue]) {
-						timerExecuted = true
-					})
-					return nil // Allow transition
-				})
-				require.NoError(t, err)
-			},
-		}
-		toState := &TestState{name: "to"}
-
-		graph, err := state.NewGraph[State](
-			fromState,
-			On[NextEvent](fromState, toState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		// Trigger transition
-		require.NoError(t, machine.Trigger(NextEvent{}))
-		// Exit should have executed
-		assert.True(t, exitExecuted)
-		// Timer should not have executed yet
-		assert.False(t, timerExecuted)
-
-		// Fast forward to timer time
-		require.NoError(t, dispatcher.FastForward(baseTime.Add(5*time.Second)))
-		// Timer should not have executed due to state transition (timers are cancelled on state change)
-		assert.False(t, timerExecuted)
-	})
-
-	t.Run("EntryMachine.AfterFunc is called from OnExit's callback and timer is fired", func(t *testing.T) {
-		// OnExit returns Guarded
-		type NextEvent struct{}
-		dispatcher := eventloop.NewDispatcher(baseTime)
-		value := &TestValue{Map: make(map[string]any)}
-
-		var timerExecuted bool
-		var exitExecuted bool
-		fromState := &TestState{
-			name: "from",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.OnExit(func(_ *state.ExitMachine[*TestValue], event Event) *state.Guarded {
-					exitExecuted = true
-					machine.AfterFunc(dispatcher, 2*time.Second, func(machine *state.AfterFuncMachine[*TestValue]) {
-						timerExecuted = true
-					})
-					return &state.Guarded{Reason: errors.New("transition blocked")} // Block transition
-				})
-				require.NoError(t, err)
-			},
-		}
-		toState := &TestState{name: "to"}
-
-		graph, err := state.NewGraph[State](
-			fromState,
-			On[NextEvent](fromState, toState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		// Trigger transition (should be blocked)
-		err = machine.Trigger(NextEvent{})
-		assert.ErrorContains(t, err, "transition blocked")
-		// Exit should have executed
-		assert.True(t, exitExecuted)
-		// Timer should not have executed yet
-		assert.False(t, timerExecuted)
-
-		// Should still be in fromState
-		currentState, err := machine.CurrentState()
-		require.NoError(t, err)
-		assert.Equal(t, fromState, currentState)
-
-		// Fast forward to timer time
-		require.NoError(t, dispatcher.FastForward(baseTime.Add(2*time.Second)))
-		// Timer should have executed since transition was blocked
-		assert.True(t, timerExecuted)
-	})
-}
-
-func TestEntryMachine_AfterEntry(t *testing.T) {
-	type TriggerEvent struct{}
-	baseTime := time.Unix(0, 0)
-
-	t.Run("AfterEntry callback executes after Entry", func(t *testing.T) {
-		value := &TestValue{Map: make(map[string]any)}
-
-		var executionOrder []string
-		initialState := &TestState{name: "initial"}
-		callbackState := &TestState{
-			name: "callback",
-			entry: func(machine *EntryMachine, event Event) {
-				executionOrder = append(executionOrder, "entry")
-				err := machine.AfterEntry(func(machine *state.AfterEntryMachine[*TestValue]) {
-					executionOrder = append(executionOrder, "after-entry")
-				})
-				require.NoError(t, err)
-			},
-		}
-
-		graph, err := state.NewGraph[State](
-			initialState,
-			On[TriggerEvent](initialState, callbackState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		// Trigger to transition to callback state
-		require.NoError(t, machine.Trigger(TriggerEvent{}))
-		// Execution order should be correct
-		assert.Equal(t, []string{"entry", "after-entry"}, executionOrder)
-	})
-
-	t.Run("Multiple AfterEntry callbacks not allowed", func(t *testing.T) {
-		value := &TestValue{Map: make(map[string]any)}
-
-		var entryExecuted bool
-		initialState := &TestState{name: "initial"}
-		callbackState := &TestState{
-			name: "callback",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.AfterEntry(func(machine *state.AfterEntryMachine[*TestValue]) {})
-				require.NoError(t, err)
-
-				err = machine.AfterEntry(func(machine *state.AfterEntryMachine[*TestValue]) {})
-				assert.ErrorContains(t, err, "callback for AfterEntry already registered")
-				entryExecuted = true
-			},
-		}
-
-		graph, err := state.NewGraph[State](
-			initialState,
-			On[TriggerEvent](initialState, callbackState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		require.NoError(t, machine.Trigger(TriggerEvent{}))
-		assert.True(t, entryExecuted)
-	})
-
-	t.Run("EntryMachine.AfterEntry is called from AfterFunc's callback and error", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
-		value := &TestValue{Map: make(map[string]any)}
-
-		var afterFuncExecuted bool
-		testState := &TestState{
-			name: "test",
-			entry: func(machine *EntryMachine, event Event) {
-				machine.AfterFunc(dispatcher, 1*time.Second, func(_ *state.AfterFuncMachine[*TestValue]) {
-					// AfterEntry call should have failed
-					err := machine.AfterEntry(func(machine *state.AfterEntryMachine[*TestValue]) {})
-					assert.ErrorContains(t, err, "AfterEntry is not callable here")
-					afterFuncExecuted = true
-				})
-			},
-		}
-
-		graph, err := state.NewGraph(testState)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		// Fast forward to execute AfterFunc
-		require.NoError(t, dispatcher.FastForward(baseTime.Add(1*time.Second)))
-		// AfterFunc should have executed
-		assert.True(t, afterFuncExecuted)
-	})
-
-	t.Run("EntryMachine.AfterEntry is called from AfterEntry's callback and error", func(t *testing.T) {
-		value := &TestValue{Map: make(map[string]any)}
-
-		var afterEntryExecuted bool
-		initialState := &TestState{name: "initial"}
-		testState := &TestState{
-			name: "test",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.AfterEntry(func(_ *state.AfterEntryMachine[*TestValue]) {
-					// AfterEntry call should have failed
-					err := machine.AfterEntry(func(machine *state.AfterEntryMachine[*TestValue]) {})
-					assert.ErrorContains(t, err, "AfterEntry is not callable here")
-					afterEntryExecuted = true
-				})
-				require.NoError(t, err)
-			},
-		}
-
-		graph, err := state.NewGraph[State](
-			initialState,
-			On[TriggerEvent](initialState, testState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		require.NoError(t, machine.Trigger(TriggerEvent{}))
-		// AfterEntry should have executed
-		assert.True(t, afterEntryExecuted)
-	})
-
-	t.Run("EntryMachine.AfterEntry is called from OnExit's callback and error", func(t *testing.T) {
-		value := &TestValue{Map: make(map[string]any)}
-
-		var exitExecuted bool
-		fromState := &TestState{
-			name: "from",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.OnExit(func(_ *state.ExitMachine[*TestValue], event Event) *state.Guarded {
-					// AfterEntry call should have failed
-					err := machine.AfterEntry(func(machine *state.AfterEntryMachine[*TestValue]) {})
-					assert.ErrorContains(t, err, "AfterEntry is not callable here")
-					exitExecuted = true
-					return &state.Guarded{Reason: errors.New("transition blocked")} // Block transition
-				})
-				require.NoError(t, err)
-			},
-		}
-		toState := &TestState{name: "to"}
-
-		graph, err := state.NewGraph[State](
-			fromState,
-			On[TriggerEvent](fromState, toState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		// Trigger transition (should be blocked)
-		err = machine.Trigger(TriggerEvent{})
-		assert.ErrorContains(t, err, "transition blocked")
-		// Exit should have executed
-		assert.True(t, exitExecuted)
-	})
-}
-
-func TestEntryMachine_OnExit(t *testing.T) {
-	type TransitionEvent struct{}
-	baseTime := time.Unix(0, 0)
-
-	t.Run("OnExit callback executes before transition", func(t *testing.T) {
-		value := &TestValue{Map: make(map[string]any)}
-
-		var executionOrder []string
-		fromState := &TestState{
-			name: "from",
-			entry: func(machine *EntryMachine, event Event) {
-				executionOrder = append(executionOrder, "from-entry")
-				err := machine.OnExit(func(machine *state.ExitMachine[*TestValue], event Event) *state.Guarded {
-					executionOrder = append(executionOrder, "exit")
-					return nil // Allow transition
-				})
-				require.NoError(t, err)
-			},
-		}
-		toState := &TestState{
-			name: "to",
-			entry: func(machine *EntryMachine, event Event) {
-				executionOrder = append(executionOrder, "to-entry")
-			},
-		}
-
-		graph, err := state.NewGraph[State](
-			fromState,
-			On[TransitionEvent](fromState, toState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		require.NoError(t, machine.Trigger(TransitionEvent{}))
-		// Execution order should be correct
-		assert.Equal(t, []string{"from-entry", "exit", "to-entry"}, executionOrder)
-	})
-
-	t.Run("OnExit guard condition prevents transition", func(t *testing.T) {
-		value := &TestValue{Map: make(map[string]any)}
-
-		fromState := &TestState{
-			name: "from",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.OnExit(func(machine *state.ExitMachine[*TestValue], event Event) *state.Guarded {
-					return &state.Guarded{Reason: errors.New("transition blocked")}
-				})
-				require.NoError(t, err)
-			},
-		}
-		toState := &TestState{name: "to"}
-
-		graph, err := state.NewGraph[State](
-			fromState,
-			On[TransitionEvent](fromState, toState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		err = machine.Trigger(TransitionEvent{})
-		assert.ErrorContains(t, err, "transition blocked")
-
-		// Should still be in the original state
-		currentState, err := machine.CurrentState()
-		require.NoError(t, err)
-		assert.Equal(t, fromState, currentState)
-	})
-
-	t.Run("Multiple OnExit callbacks not allowed", func(t *testing.T) {
-		value := &TestValue{Map: make(map[string]any)}
-
-		var entryExecuted bool
-		exitState := &TestState{
-			name: "exit",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.OnExit(func(machine *state.ExitMachine[*TestValue], event Event) *state.Guarded {
-					return nil
-				})
-				require.NoError(t, err)
-
-				err = machine.OnExit(func(machine *state.ExitMachine[*TestValue], event Event) *state.Guarded {
-					return nil
-				})
-				assert.ErrorContains(t, err, "exit callback already registered")
-				entryExecuted = true
-			},
-		}
-
-		graph, err := state.NewGraph(exitState)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-		assert.True(t, entryExecuted)
-	})
-
-	t.Run("Guarded with nil Reason", func(t *testing.T) {
-		type GuardEvent struct{}
-		value := &TestValue{Map: make(map[string]any)}
-
-		fromState := &TestState{
-			name: "from",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.OnExit(func(machine *state.ExitMachine[*TestValue], event Event) *state.Guarded {
-					return &state.Guarded{Reason: nil} // nil reason
-				})
-				require.NoError(t, err)
-			},
-		}
-		toState := &TestState{name: "to"}
-
-		graph, err := state.NewGraph[State](
-			fromState,
-			On[GuardEvent](fromState, toState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		err = machine.Trigger(GuardEvent{})
-		assert.Error(t, err)
-		assert.Equal(t, "state transition blocked", err.Error()) // Default message for nil Reason
-
-		// Should still be in original state
-		currentState, err := machine.CurrentState()
-		require.NoError(t, err)
-		assert.Equal(t, fromState, currentState)
-	})
-
-	t.Run("Guard callback receives correct event", func(t *testing.T) {
-		type SpecialEvent struct{ data string }
-		value := &TestValue{Map: make(map[string]any)}
-
-		var receivedEvent Event
-		fromState := &TestState{
-			name: "from",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.OnExit(func(machine *state.ExitMachine[*TestValue], receivedEvt Event) *state.Guarded {
-					receivedEvent = receivedEvt
-					return &state.Guarded{Reason: errors.New("blocked")}
-				})
-				require.NoError(t, err)
-			},
-		}
-		toState := &TestState{name: "to"}
-
-		graph, err := state.NewGraph[State](
-			fromState,
-			On[SpecialEvent](fromState, toState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		// Trigger with specific event
-		triggerEvent := SpecialEvent{data: "test"}
-		err = machine.Trigger(triggerEvent)
-		assert.ErrorContains(t, err, "blocked")
-		// Guard should have received the same event
-		assert.Equal(t, triggerEvent, receivedEvent)
-	})
-
-	t.Run("EntryMachine.OnExit is called from AfterFunc's callback and success", func(t *testing.T) {
-		type NextEvent struct{}
-		dispatcher := eventloop.NewDispatcher(baseTime)
-		value := &TestValue{Map: make(map[string]any)}
-
-		var afterFuncExecuted bool
-		var exitExecuted bool
-		testState := &TestState{
-			name: "test",
-			entry: func(machine *EntryMachine, event Event) {
-				machine.AfterFunc(dispatcher, 1*time.Second, func(_ *state.AfterFuncMachine[*TestValue]) {
-					err := machine.OnExit(func(machine *state.ExitMachine[*TestValue], event Event) *state.Guarded {
-						exitExecuted = true
-						return nil // Allow transition
-					})
-					assert.NoError(t, err)
-					afterFuncExecuted = true
-				})
-			},
-		}
-		nextState := &TestState{name: "next"}
-
-		graph, err := state.NewGraph[State](
-			testState,
-			On[NextEvent](testState, nextState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		// Fast forward to execute AfterFunc
-		require.NoError(t, dispatcher.FastForward(baseTime.Add(1*time.Second)))
-		// AfterFunc should have executed
-		assert.True(t, afterFuncExecuted)
-
-		// Trigger transition to verify OnExit works
-		require.NoError(t, machine.Trigger(NextEvent{}))
-		assert.True(t, exitExecuted)
-
-		// Should be in next state
-		currentState, err := machine.CurrentState()
-		require.NoError(t, err)
-		assert.Equal(t, nextState, currentState)
-	})
-
-	t.Run("EntryMachine.OnExit is called from AfterEntry's callback and success", func(t *testing.T) {
-		type TriggerEvent struct{}
-		type NextEvent struct{}
-		value := &TestValue{Map: make(map[string]any)}
-
-		var afterEntryExecuted bool
-		var exitExecuted bool
-		initialState := &TestState{name: "initial"}
-		testState := &TestState{
-			name: "test",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.AfterEntry(func(_ *state.AfterEntryMachine[*TestValue]) {
-					err := machine.OnExit(func(machine *state.ExitMachine[*TestValue], event Event) *state.Guarded {
-						exitExecuted = true
-						return nil // Allow transition
-					})
-					assert.NoError(t, err)
-					afterEntryExecuted = true
-				})
-				require.NoError(t, err)
-			},
-		}
-		nextState := &TestState{name: "next"}
-
-		graph, err := state.NewGraph[State](
-			initialState,
-			On[TriggerEvent](initialState, testState),
-			On[NextEvent](testState, nextState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		// Trigger to test state
-		require.NoError(t, machine.Trigger(TriggerEvent{}))
-		// AfterEntry should have executed
-		assert.True(t, afterEntryExecuted)
-
-		// Trigger transition to verify OnExit works
-		require.NoError(t, machine.Trigger(NextEvent{}))
-		assert.True(t, exitExecuted)
-
-		// Should be in next state
-		currentState, err := machine.CurrentState()
-		require.NoError(t, err)
-		assert.Equal(t, nextState, currentState)
-	})
-
-	t.Run("EntryMachine.OnExit is called from OnExit's callback and error", func(t *testing.T) {
-		type NextEvent struct{}
-		value := &TestValue{Map: make(map[string]any)}
-
-		var exitExecuted bool
-		fromState := &TestState{
-			name: "from",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.OnExit(func(_ *state.ExitMachine[*TestValue], event Event) *state.Guarded {
-					err := machine.OnExit(func(machine *state.ExitMachine[*TestValue], event Event) *state.Guarded {
-						assert.Fail(t, "should not be called")
-						return nil
-					})
-					assert.ErrorContains(t, err, "method is not callable here")
-					exitExecuted = true
-					return &state.Guarded{Reason: errors.New("transition blocked")} // Block transition
-				})
-				require.NoError(t, err)
-			},
-		}
-		toState := &TestState{name: "to"}
-
-		graph, err := state.NewGraph[State](
-			fromState,
-			On[NextEvent](fromState, toState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		// Trigger transition (should be blocked)
-		err = machine.Trigger(NextEvent{})
-		assert.ErrorContains(t, err, "transition blocked")
-		// Exit should have executed
-		assert.True(t, exitExecuted)
-	})
-}
-
-func TestAfterFuncMachine_Value(t *testing.T) {
-	baseTime := time.Unix(0, 0)
-
-	t.Run("Value returns machine data", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
-		expectedData := map[string]any{"timer": "test", "count": 456}
-		value := &TestValue{Map: expectedData}
-
-		var afterFuncExecuted bool
-		testState := &TestState{
-			name: "test",
-			entry: func(machine *EntryMachine, event Event) {
-				machine.AfterFunc(dispatcher, 1*time.Second, func(machine *state.AfterFuncMachine[*TestValue]) {
-					assert.Equal(t, value, machine.Value())
-					afterFuncExecuted = true
-				})
-			},
-		}
-
-		graph, err := state.NewGraph(testState)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		// Fast forward to execute timer
-		require.NoError(t, dispatcher.FastForward(baseTime.Add(1*time.Second)))
-		assert.True(t, afterFuncExecuted)
-	})
-}
-
-func TestAfterFuncMachine_AfterFunc(t *testing.T) {
-	baseTime := time.Unix(0, 0)
-
-	t.Run("Schedule timer from AfterFunc callback", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
-		value := &TestValue{Map: make(map[string]any)}
-
-		var firstExecuted, secondExecuted bool
-		testState := &TestState{
-			name: "test",
-			entry: func(machine *EntryMachine, event Event) {
-				machine.AfterFunc(dispatcher, 2*time.Second, func(machine *state.AfterFuncMachine[*TestValue]) {
-					firstExecuted = true
-					// Schedule another timer from within timer callback
-					machine.AfterFunc(dispatcher, 1*time.Second, func(machine *state.AfterFuncMachine[*TestValue]) {
-						secondExecuted = true
-					})
-				})
-			},
-		}
-
-		graph, err := state.NewGraph(testState)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-		// First timer should not have executed yet
-		assert.False(t, firstExecuted)
-		assert.False(t, secondExecuted)
-
-		// Fast forward to first timer
-		require.NoError(t, dispatcher.FastForward(baseTime.Add(2*time.Second)))
-		assert.True(t, firstExecuted)
-		assert.False(t, secondExecuted)
-
-		// Fast forward to second timer
-		require.NoError(t, dispatcher.FastForward(baseTime.Add(3*time.Second)))
-		assert.True(t, firstExecuted)
-		assert.True(t, secondExecuted)
-	})
-}
-
-func TestAfterFuncMachine_Trigger(t *testing.T) {
-	type NextEvent struct{}
-	baseTime := time.Unix(0, 0)
-
-	t.Run("Trigger from AfterFunc callback", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
-		value := &TestValue{Map: make(map[string]any)}
-
-		var triggerExecuted bool
-		fromState := &TestState{
-			name: "from",
-			entry: func(machine *EntryMachine, event Event) {
-				machine.AfterFunc(dispatcher, 1*time.Second, func(machine *state.AfterFuncMachine[*TestValue]) {
-					err := machine.Trigger(NextEvent{})
-					require.NoError(t, err)
-					triggerExecuted = true
-				})
-			},
-		}
-		toState := &TestState{name: "to"}
-
-		graph, err := state.NewGraph[State](
-			fromState,
-			On[NextEvent](fromState, toState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-		// Timer hasn't fired yet
-		assert.False(t, triggerExecuted)
-
-		currentState, err := machine.CurrentState()
-		require.NoError(t, err)
-		assert.Equal(t, fromState, currentState)
-
-		// Fast forward to execute timer
-		require.NoError(t, dispatcher.FastForward(baseTime.Add(1*time.Second)))
-		// Should have triggered transition
-		assert.True(t, triggerExecuted)
-
-		currentState, err = machine.CurrentState()
-		require.NoError(t, err)
-		assert.Equal(t, toState, currentState)
-	})
-
-	t.Run("AfterFuncMachine.Trigger is called from Entry method and error", func(t *testing.T) {
-		type NextEvent struct{}
-		value := &TestValue{Map: make(map[string]any)}
-
-		var entryExecuted bool
-		testState := &TestState{
-			name: "test",
-			entry: func(machine *EntryMachine, event Event) {
-				// Register an AfterEntry callback first to make the trigger fail
-				require.NoError(t, machine.AfterEntry(func(machine *state.AfterEntryMachine[*TestValue]) {}))
-
-				// Convert to AfterFuncMachine to try calling Trigger while already having AfterEntry
-				afterFuncMachine := machine.AsMachineAccessor().AsAfterFuncMachine()
-				err := afterFuncMachine.Trigger(NextEvent{})
-				// Should have an error due to callback conflict
-				assert.ErrorContains(t, err, "method is not callable here")
-
-				entryExecuted = true
-			},
-		}
-		nextState := &TestState{
-			name: "next",
-			entry: func(machine *EntryMachine, event Event) {
-				assert.Fail(t, "should not be called")
-			},
-		}
-
-		graph, err := state.NewGraph[State](
-			testState,
-			On[NextEvent](testState, nextState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-		// Entry should have executed
-		assert.True(t, entryExecuted)
-	})
-
-	t.Run("AfterFuncMachine.Trigger is called from AfterEntry callback and error", func(t *testing.T) {
-		type NextEvent struct{}
-		type SecondEvent struct{}
-		value := &TestValue{Map: make(map[string]any)}
-
-		var afterEntryExecuted bool
-		initialState := &TestState{name: "initial"}
-		firstState := &TestState{
-			name: "first",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.AfterEntry(func(machine *state.AfterEntryMachine[*TestValue]) {
-					// Convert to AfterFuncMachine to try calling Trigger from within AfterEntry context
-					afterFuncMachine := machine.AsMachineAccessor().AsAfterFuncMachine()
-					err := afterFuncMachine.Trigger(SecondEvent{})
-					assert.ErrorContains(t, err, "method is not callable here")
-					afterEntryExecuted = true
-				})
-				require.NoError(t, err)
-			},
-		}
-		secondState := &TestState{
-			name: "second",
-			entry: func(machine *EntryMachine, event Event) {
-				assert.Fail(t, "should not be called")
-			},
-		}
-
-		graph, err := state.NewGraph[State](
-			initialState,
-			On[NextEvent](initialState, firstState),
-			On[SecondEvent](firstState, secondState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		require.NoError(t, machine.Trigger(NextEvent{}))
-		// AfterEntry should have executed
-		assert.True(t, afterEntryExecuted)
-	})
-
-	t.Run("AfterFuncMachine.Trigger is called from OnExit callback and error", func(t *testing.T) {
-		type NextEvent struct{}
-		type SecondEvent struct{}
-		value := &TestValue{Map: make(map[string]any)}
-
-		var exitExecuted bool
-		fromState := &TestState{
-			name: "from",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.OnExit(func(machine *state.ExitMachine[*TestValue], event Event) *state.Guarded {
-					// Convert to AfterFuncMachine to try calling Trigger from OnExit context
-					afterFuncMachine := machine.AsMachineAccessor().AsAfterFuncMachine()
-					err := afterFuncMachine.Trigger(SecondEvent{})
-					assert.ErrorContains(t, err, "method is not callable here")
-
-					exitExecuted = true
-					return nil // Allow transition
-				})
-				require.NoError(t, err)
-			},
-		}
-		toState := &TestState{name: "to"}
-		secondState := &TestState{name: "second"}
-
-		graph, err := state.NewGraph[State](
-			fromState,
-			On[NextEvent](fromState, toState),
-			On[SecondEvent](toState, secondState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		require.NoError(t, machine.Trigger(NextEvent{}))
-		// Exit should have executed
-		assert.True(t, exitExecuted)
-	})
-}
-
-func TestAfterEntryMachine_Value(t *testing.T) {
-	type TriggerEvent struct{}
-
-	t.Run("Value returns machine data", func(t *testing.T) {
-		value := &TestValue{Map: map[string]any{"after": "entry", "test": 789}}
-
-		var afterEntryExecuted bool
-		initialState := &TestState{name: "initial"}
-		testState := &TestState{
-			name: "test",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.AfterEntry(func(machine *state.AfterEntryMachine[*TestValue]) {
-					assert.Equal(t, value, machine.Value())
-					afterEntryExecuted = true
-				})
-				require.NoError(t, err)
-			},
-		}
-
-		graph, err := state.NewGraph[State](
-			initialState,
-			On[TriggerEvent](initialState, testState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		require.NoError(t, machine.Trigger(TriggerEvent{}))
-		assert.True(t, afterEntryExecuted)
-	})
-}
-
-func TestAfterEntryMachine_Trigger(t *testing.T) {
 	type FirstEvent struct{}
-	type SecondEvent struct{}
+	type SelfEvent struct{}
+	type UndefinedEvent struct{}
 	baseTime := time.Unix(0, 0)
 
-	t.Run("Trigger from AfterEntry callback", func(t *testing.T) {
-		value := &TestValue{Map: make(map[string]any)}
-
-		var triggerExecuted bool
-		initialState := &TestState{name: "initial"}
-		firstState := &TestState{
-			name: "first",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.AfterEntry(func(machine *state.AfterEntryMachine[*TestValue]) {
-					err := machine.Trigger(SecondEvent{})
-					require.NoError(t, err)
-					triggerExecuted = true
-				})
-				require.NoError(t, err)
-			},
-		}
-		secondState := &TestState{name: "second"}
-
-		graph, err := state.NewGraph[State](
-			initialState,
-			On[FirstEvent](initialState, firstState),
-			On[SecondEvent](firstState, secondState),
-		)
+	t.Run("Trigger before Launch returns ErrNotLaunched", func(t *testing.T) {
+		g, err := state.NewGraph[State](&TestState{name: "initial"})
 		require.NoError(t, err)
 
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		require.NoError(t, machine.Trigger(FirstEvent{}))
-		assert.True(t, triggerExecuted)
-
-		// Should have triggered transition to second state
-		currentState, err := machine.CurrentState()
-		require.NoError(t, err)
-		assert.Equal(t, secondState, currentState)
+		machine := state.NewMachine(g, &TestValue{})
+		assert.ErrorIs(t, machine.Trigger(NextEvent{}), state.ErrNotLaunched)
 	})
 
-	t.Run("AfterEntry infinite loop prevention", func(t *testing.T) {
-		type LoopEvent struct{}
-		value := &TestValue{Map: make(map[string]any)}
-
-		var callCount int
-		const maxIterations = 100000
-		initialState := &TestState{name: "initial"}
-		loopState := &TestState{
-			name: "loop",
-			entry: func(machine *EntryMachine, event Event) {
-				callCount++
-				if callCount < maxIterations {
-					err := machine.AfterEntry(func(machine *state.AfterEntryMachine[*TestValue]) {
-						// This should trigger another Entry via AfterEntry mechanism
-						_ = machine.Trigger(LoopEvent{})
-					})
-					require.NoError(t, err)
-				}
+	t.Run("Trigger with a nil event returns ErrNilEvent", func(t *testing.T) {
+		exitCount := 0
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.OnExit(func(Event) *state.Guarded {
+					exitCount++
+					return nil
+				}))
+				return nil
 			},
 		}
-
-		graph, err := state.NewGraph[State](
-			initialState,
-			On[LoopEvent](initialState, loopState),
-			On[LoopEvent](loopState, loopState), // Self-loop
-		)
+		g, err := state.NewGraph[State](initial)
 		require.NoError(t, err)
 
-		machine := state.NewMachine(graph, value)
+		machine := state.NewMachine(g, &TestValue{})
 		require.NoError(t, machine.Launch())
 
-		// Start the loop
-		require.NoError(t, machine.Trigger(LoopEvent{}))
-		// Should not result in stack overflow and should handle many iterations
-		assert.Equal(t, callCount, maxIterations, "Should eventually stop when limit reached")
+		assert.ErrorIs(t, machine.Trigger(nil), state.ErrNilEvent)
+		assert.Equal(t, 0, exitCount)
 	})
 
-	t.Run("AfterEntry chaining across states", func(t *testing.T) {
-		type LoopEvent struct{}
-		type ChainEvent struct{}
-		value := &TestValue{Map: make(map[string]any)}
-
-		var executionOrder []string
-		initialState := &TestState{name: "initial"}
-		stateA := &TestState{
-			name: "A",
-			entry: func(machine *EntryMachine, event Event) {
-				executionOrder = append(executionOrder, "A-entry")
-				err := machine.AfterEntry(func(machine *state.AfterEntryMachine[*TestValue]) {
-					executionOrder = append(executionOrder, "A-after")
-					_ = machine.Trigger(ChainEvent{})
-				})
-				require.NoError(t, err)
+	t.Run("Trigger with no transition returns ErrNoTransition", func(t *testing.T) {
+		guarded := &state.Guarded{Reason: errors.New("blocked")}
+		exitCount := 0
+		next := &TestState{name: "next"}
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.OnExit(func(Event) *state.Guarded {
+					exitCount++
+					return guarded
+				}))
+				return nil
 			},
 		}
-		stateB := &TestState{
-			name: "B",
-			entry: func(machine *EntryMachine, event Event) {
-				executionOrder = append(executionOrder, "B-entry")
-				err := machine.AfterEntry(func(machine *state.AfterEntryMachine[*TestValue]) {
-					executionOrder = append(executionOrder, "B-after")
-				})
-				require.NoError(t, err)
-			},
-		}
-
-		graph, err := state.NewGraph[State](
-			initialState,
-			On[LoopEvent](initialState, stateA),
-			On[ChainEvent](stateA, stateB),
-		)
+		g, err := state.NewGraph[State](initial, On[NextEvent](initial, next))
 		require.NoError(t, err)
 
-		machine := state.NewMachine(graph, value)
+		machine := state.NewMachine(g, &TestValue{})
 		require.NoError(t, machine.Launch())
 
-		// Trigger transition to stateA
-		require.NoError(t, machine.Trigger(LoopEvent{}))
-		// Should execute A-entry -> A-after -> B-entry -> B-after
-		expected := []string{"A-entry", "A-after", "B-entry", "B-after"}
-		assert.Equal(t, expected, executionOrder)
+		assert.ErrorIs(t, machine.Trigger(UndefinedEvent{}), state.ErrNoTransition)
+		assert.Equal(t, 0, exitCount)
+
+		assert.Same(t, guarded, machine.Trigger(NextEvent{}))
+		assert.Equal(t, 1, exitCount)
 	})
 
-	t.Run("AfterEntryMachine.Trigger is called from Entry method and error", func(t *testing.T) {
-		type SecondEvent struct{}
-		value := &TestValue{Map: make(map[string]any)}
-
-		var entryExecuted bool
-		firstState := &TestState{
-			name: "first",
-			entry: func(machine *EntryMachine, event Event) {
-				// Convert to AfterEntryMachine to try calling Trigger from Entry context
-				afterEntryMachine := machine.AsMachineAccessor().AsAfterEntryMachine()
-				err := afterEntryMachine.Trigger(SecondEvent{})
-				assert.ErrorContains(t, err, "method is not callable here")
-
-				entryExecuted = true
-			},
-		}
-		secondState := &TestState{
-			name: "second",
-			entry: func(machine *EntryMachine, event Event) {
-				assert.Fail(t, "Should not be called")
-			},
-		}
-
-		graph, err := state.NewGraph[State](
-			firstState,
-			On[SecondEvent](firstState, secondState),
-		)
+	t.Run("Trigger performs the defined transition", func(t *testing.T) {
+		initial := &TestState{name: "initial"}
+		next := &TestState{name: "next"}
+		g, err := state.NewGraph[State](initial, On[NextEvent](initial, next))
 		require.NoError(t, err)
 
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		// Entry should have executed
-		assert.True(t, entryExecuted)
-	})
-
-	t.Run("AfterEntryMachine.Trigger is called from AfterFunc's callback and error", func(t *testing.T) {
-		type SecondEvent struct{}
-		dispatcher := eventloop.NewDispatcher(baseTime)
-		value := &TestValue{Map: make(map[string]any)}
-
-		var afterFuncExecuted bool
-		firstState := &TestState{
-			name: "first",
-			entry: func(machine *EntryMachine, event Event) {
-				machine.AfterFunc(dispatcher, 1*time.Second, func(machine *state.AfterFuncMachine[*TestValue]) {
-					// Convert to AfterEntryMachine to try calling Trigger from AfterFunc context
-					afterEntryMachine := machine.AsMachineAccessor().AsAfterEntryMachine()
-					err := afterEntryMachine.Trigger(SecondEvent{})
-					assert.ErrorContains(t, err, "method is not callable here")
-
-					afterFuncExecuted = true
-				})
-			},
-		}
-		secondState := &TestState{
-			name: "second",
-			entry: func(machine *EntryMachine, event Event) {
-				assert.Fail(t, "Should not be called")
-			},
-		}
-
-		graph, err := state.NewGraph[State](
-			firstState,
-			On[SecondEvent](firstState, secondState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
-		require.NoError(t, machine.Launch())
-
-		// Fast forward to execute AfterFunc
-		require.NoError(t, dispatcher.FastForward(baseTime.Add(1*time.Second)))
-		// AfterFunc should have executed
-		assert.True(t, afterFuncExecuted)
-	})
-
-	t.Run("AfterEntryMachine.Trigger is called from OnExit's callback and error", func(t *testing.T) {
-		type NextEvent struct{}
-		type SecondEvent struct{}
-		value := &TestValue{Map: make(map[string]any)}
-
-		var exitExecuted bool
-		fromState := &TestState{
-			name: "from",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.OnExit(func(machine *state.ExitMachine[*TestValue], event Event) *state.Guarded {
-					// Convert to AfterEntryMachine to try calling Trigger from OnExit context
-					afterEntryMachine := machine.AsMachineAccessor().AsAfterEntryMachine()
-					err := afterEntryMachine.Trigger(SecondEvent{})
-					assert.ErrorContains(t, err, "method is not callable here")
-
-					exitExecuted = true
-					return nil // Allow transition
-				})
-				require.NoError(t, err)
-			},
-		}
-		toState := &TestState{
-			name: "to",
-		}
-		secondState := &TestState{
-			name: "second",
-			entry: func(machine *EntryMachine, event Event) {
-				assert.Fail(t, "Should not be called")
-			},
-		}
-
-		graph, err := state.NewGraph[State](
-			fromState,
-			On[NextEvent](fromState, toState),
-			On[SecondEvent](toState, secondState),
-		)
-		require.NoError(t, err)
-
-		machine := state.NewMachine(graph, value)
+		machine := state.NewMachine(g, &TestValue{})
 		require.NoError(t, machine.Launch())
 
 		require.NoError(t, machine.Trigger(NextEvent{}))
-		// Exit should have executed
-		assert.True(t, exitExecuted)
+		current, err := machine.CurrentState()
+		require.NoError(t, err)
+		assert.Equal(t, next, current)
+	})
+
+	t.Run("Trigger from the destination without an edge returns ErrNoTransition", func(t *testing.T) {
+		initial := &TestState{name: "initial"}
+		next := &TestState{name: "next"}
+		g, err := state.NewGraph[State](initial, On[NextEvent](initial, next))
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+		require.NoError(t, machine.Trigger(NextEvent{}))
+
+		assert.ErrorIs(t, machine.Trigger(NextEvent{}), state.ErrNoTransition)
+		current, err := machine.CurrentState()
+		require.NoError(t, err)
+		assert.Equal(t, next, current)
+	})
+
+	t.Run("Trigger returns the Guarded of the transition it performs", func(t *testing.T) {
+		guarded := &state.Guarded{Reason: errors.New("blocked")}
+		entryCount := 0
+		next := &TestState{
+			name: "next",
+			entry: func(*EntryMachine, Event) state.Command {
+				entryCount++
+				return nil
+			},
+		}
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.OnExit(func(Event) *state.Guarded {
+					return guarded
+				}))
+				return nil
+			},
+		}
+		g, err := state.NewGraph[State](initial, On[NextEvent](initial, next))
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+
+		assert.Same(t, guarded, machine.Trigger(NextEvent{}))
+		assert.Equal(t, 0, entryCount)
+		current, err := machine.CurrentState()
+		require.NoError(t, err)
+		assert.Equal(t, initial, current)
+	})
+
+	t.Run("Trigger returns the failure of a chained event", func(t *testing.T) {
+		a := &TestState{
+			name: "a",
+			entry: func(*EntryMachine, Event) state.Command {
+				return state.Trigger(UndefinedEvent{})
+			},
+		}
+		initial := &TestState{name: "initial"}
+		g, err := state.NewGraph[State](initial, On[FirstEvent](initial, a))
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+
+		assert.ErrorIs(t, machine.Trigger(FirstEvent{}), state.ErrNoTransition)
+		current, err := machine.CurrentState()
+		require.NoError(t, err)
+		assert.Equal(t, a, current)
+	})
+
+	t.Run("Launch, Trigger and Stop from inside Entry are refused", func(t *testing.T) {
+		var machine *state.Machine[State, *TestValue]
+		entryCount := 0
+		next := &TestState{
+			name: "next",
+			entry: func(*EntryMachine, Event) state.Command {
+				entryCount++
+				return nil
+			},
+		}
+		initial := &TestState{
+			name: "initial",
+			entry: func(*EntryMachine, Event) state.Command {
+				assert.ErrorIs(t, machine.Launch(), state.ErrInCallback)
+				assert.ErrorIs(t, machine.Trigger(NextEvent{}), state.ErrInTransition)
+				assert.ErrorIs(t, machine.Stop(), state.ErrInTransition)
+				return nil
+			},
+		}
+		g, err := state.NewGraph[State](initial, On[NextEvent](initial, next))
+		require.NoError(t, err)
+
+		machine = state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+
+		assert.Equal(t, 0, entryCount)
+		current, err := machine.CurrentState()
+		require.NoError(t, err)
+		assert.Equal(t, initial, current)
+	})
+
+	t.Run("Launch, Trigger and Stop from inside the exit action are refused", func(t *testing.T) {
+		var machine *state.Machine[State, *TestValue]
+		next := &TestState{name: "next"}
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.OnExit(func(Event) *state.Guarded {
+					assert.ErrorIs(t, machine.Launch(), state.ErrInCallback)
+					assert.ErrorIs(t, machine.Trigger(NextEvent{}), state.ErrInTransition)
+					assert.ErrorIs(t, machine.Stop(), state.ErrInTransition)
+					return nil
+				}))
+				return nil
+			},
+		}
+		g, err := state.NewGraph[State](initial, On[NextEvent](initial, next))
+		require.NoError(t, err)
+
+		machine = state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+
+		require.NoError(t, machine.Trigger(NextEvent{}))
+		current, err := machine.CurrentState()
+		require.NoError(t, err)
+		assert.Equal(t, next, current)
+	})
+
+	t.Run("Machine.Trigger from a timer callback performs the transition", func(t *testing.T) {
+		dispatcher := eventloop.NewDispatcher(baseTime)
+		var machine *state.Machine[State, *TestValue]
+		var triggerErr error
+		next := &TestState{name: "next"}
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.AfterFunc(dispatcher, time.Second, func(*AfterFuncMachine) {
+					triggerErr = machine.Trigger(NextEvent{})
+				}))
+				return nil
+			},
+		}
+		g, err := state.NewGraph[State](initial, On[NextEvent](initial, next))
+		require.NoError(t, err)
+
+		machine = state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+		require.NoError(t, dispatcher.FastForward(baseTime.Add(time.Second)))
+
+		assert.NoError(t, triggerErr)
+		current, err := machine.CurrentState()
+		require.NoError(t, err)
+		assert.Equal(t, next, current)
+	})
+
+	t.Run("Machine.Launch from a timer callback returns ErrInCallback", func(t *testing.T) {
+		dispatcher := eventloop.NewDispatcher(baseTime)
+		var machine *state.Machine[State, *TestValue]
+		var stopErr, launchErr error
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.AfterFunc(dispatcher, time.Second, func(*AfterFuncMachine) {
+					stopErr = machine.Stop()
+					launchErr = machine.Launch()
+				}))
+				return nil
+			},
+		}
+		g, err := state.NewGraph[State](initial)
+		require.NoError(t, err)
+
+		machine = state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+		require.NoError(t, dispatcher.FastForward(baseTime.Add(time.Second)))
+
+		assert.NoError(t, stopErr)
+		assert.ErrorIs(t, launchErr, state.ErrInCallback)
+		_, err = machine.CurrentState()
+		assert.ErrorIs(t, err, state.ErrNotLaunched)
+	})
+
+	t.Run("self transition runs the exit action and then Entry", func(t *testing.T) {
+		var order []string
+		initial := &TestState{name: "initial"}
+		initial.entry = func(m *EntryMachine, _ Event) state.Command {
+			order = append(order, "entry")
+			require.NoError(t, m.OnExit(func(Event) *state.Guarded {
+				order = append(order, "exit")
+				return nil
+			}))
+			return nil
+		}
+		g, err := state.NewGraph[State](initial, On[SelfEvent](initial, initial))
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+
+		require.NoError(t, machine.Trigger(SelfEvent{}))
+		assert.Equal(t, []string{"entry", "exit", "entry"}, order)
+		current, err := machine.CurrentState()
+		require.NoError(t, err)
+		assert.Equal(t, initial, current)
+	})
+
+	t.Run("Trigger after Stop returns ErrNotLaunched and does not rerun the exit action", func(t *testing.T) {
+		exitCount := 0
+		next := &TestState{name: "next"}
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.OnExit(func(Event) *state.Guarded {
+					exitCount++
+					return nil
+				}))
+				return nil
+			},
+		}
+		g, err := state.NewGraph[State](initial, On[NextEvent](initial, next))
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+		require.NoError(t, machine.Stop())
+
+		assert.ErrorIs(t, machine.Trigger(NextEvent{}), state.ErrNotLaunched)
+		assert.Equal(t, 1, exitCount)
 	})
 }
 
-func TestExitMachine_Value(t *testing.T) {
-	type TransitionEvent struct{}
+func TestMachine_Stop(t *testing.T) {
+	baseTime := time.Unix(0, 0)
 
-	t.Run("Value returns machine data", func(t *testing.T) {
-		value := &TestValue{Map: map[string]any{"exit": "test", "value": 999}}
-
-		var exitExecuted bool
-		fromState := &TestState{
-			name: "from",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.OnExit(func(machine *state.ExitMachine[*TestValue], event Event) *state.Guarded {
-					assert.Equal(t, value, machine.Value())
-					exitExecuted = true
+	t.Run("Stop runs the exit action with a nil event", func(t *testing.T) {
+		var exitEvents []Event
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.OnExit(func(event Event) *state.Guarded {
+					exitEvents = append(exitEvents, event)
 					return nil
-				})
-				require.NoError(t, err)
+				}))
+				return nil
 			},
 		}
-		toState := &TestState{name: "to"}
+		g, err := state.NewGraph[State](initial)
+		require.NoError(t, err)
 
-		graph, err := state.NewGraph[State](
-			fromState,
-			On[TransitionEvent](fromState, toState),
+		machine := state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+
+		require.NoError(t, machine.Stop())
+		assert.Equal(t, []Event{nil}, exitEvents)
+		_, err = machine.CurrentState()
+		assert.ErrorIs(t, err, state.ErrNotLaunched)
+	})
+
+	t.Run("Stop is not blocked by a Guarded and returns no error", func(t *testing.T) {
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.OnExit(func(Event) *state.Guarded {
+					return &state.Guarded{Reason: errors.New("blocked")}
+				}))
+				return nil
+			},
+		}
+		g, err := state.NewGraph[State](initial)
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+
+		require.NoError(t, machine.Stop())
+		assert.ErrorIs(t, machine.Stop(), state.ErrNotLaunched)
+	})
+
+	t.Run("Stop cancels the timers of the current visit", func(t *testing.T) {
+		dispatcher := eventloop.NewDispatcher(baseTime)
+		timerFired := false
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.AfterFunc(dispatcher, 5*time.Second, func(*AfterFuncMachine) {
+					timerFired = true
+				}))
+				return nil
+			},
+		}
+		g, err := state.NewGraph[State](initial)
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+		require.NoError(t, machine.Stop())
+
+		require.NoError(t, dispatcher.FastForward(baseTime.Add(10*time.Second)))
+		assert.False(t, timerFired)
+	})
+
+	t.Run("duplicate Stop returns ErrNotLaunched", func(t *testing.T) {
+		exitCount := 0
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.OnExit(func(Event) *state.Guarded {
+					exitCount++
+					return nil
+				}))
+				return nil
+			},
+		}
+		g, err := state.NewGraph[State](initial)
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+		require.NoError(t, machine.Stop())
+
+		assert.ErrorIs(t, machine.Stop(), state.ErrNotLaunched)
+		assert.Equal(t, 1, exitCount)
+	})
+
+	t.Run("Stop before Launch returns ErrNotLaunched", func(t *testing.T) {
+		g, err := state.NewGraph[State](&TestState{name: "initial"})
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		assert.ErrorIs(t, machine.Stop(), state.ErrNotLaunched)
+	})
+
+	t.Run("Stop succeeds after Entry panicked", func(t *testing.T) {
+		var exitEvents []Event
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.OnExit(func(event Event) *state.Guarded {
+					exitEvents = append(exitEvents, event)
+					return nil
+				}))
+				panic("entry failed")
+			},
+		}
+		g, err := state.NewGraph[State](initial)
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		assert.Panics(t, func() {
+			_ = machine.Launch()
+		})
+
+		require.NoError(t, machine.Stop())
+		assert.Equal(t, []Event{nil}, exitEvents)
+	})
+
+	t.Run("Stop succeeds after the exit action panicked and does not rerun it", func(t *testing.T) {
+		type NextEvent struct{}
+		dispatcher := eventloop.NewDispatcher(baseTime)
+		exitCount := 0
+		fired := false
+		next := &TestState{name: "next"}
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.OnExit(func(Event) *state.Guarded {
+					exitCount++
+					panic("exit failed")
+				}))
+				require.NoError(t, m.AfterFunc(dispatcher, 1*time.Second, func(*AfterFuncMachine) {
+					fired = true
+				}))
+				return nil
+			},
+		}
+		g, err := state.NewGraph[State](initial, On[NextEvent](initial, next))
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+		assert.Panics(t, func() {
+			_ = machine.Trigger(NextEvent{})
+		})
+
+		require.NoError(t, machine.Stop())
+		assert.Equal(t, 1, exitCount)
+		require.NoError(t, dispatcher.FastForward(baseTime.Add(2*time.Second)))
+		assert.False(t, fired)
+	})
+}
+
+func TestMachine_Chain(t *testing.T) {
+	type ChainEvent struct{}
+	type LoopEvent struct{}
+	baseTime := time.Unix(0, 0)
+
+	t.Run("a nil event from Entry ends the chain", func(t *testing.T) {
+		initial := &TestState{name: "initial"}
+		g, err := state.NewGraph[State](initial)
+		require.NoError(t, err)
+
+		tracer := &recordingTracer{}
+		machine := state.NewMachine(g, &TestValue{}, state.WithTracer[State](tracer))
+		require.NoError(t, machine.Launch())
+
+		assert.Equal(t, []Transition{{To: initial}}, tracer.calls)
+	})
+
+	t.Run("the event returned by Entry is processed after Entry returns", func(t *testing.T) {
+		var machine *state.Machine[State, *TestValue]
+		var order []string
+		b := &TestState{
+			name: "b",
+			entry: func(*EntryMachine, Event) state.Command {
+				order = append(order, "b-entry")
+				return nil
+			},
+		}
+		a := &TestState{name: "a"}
+		a.entry = func(*EntryMachine, Event) state.Command {
+			order = append(order, "a-entry")
+			current, err := machine.CurrentState()
+			require.NoError(t, err)
+			assert.Equal(t, a, current)
+			return state.Trigger(ChainEvent{})
+		}
+		g, err := state.NewGraph[State](a, On[ChainEvent](a, b))
+		require.NoError(t, err)
+
+		machine = state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+
+		assert.Equal(t, []string{"a-entry", "b-entry"}, order)
+	})
+
+	t.Run("a chain across states runs in order", func(t *testing.T) {
+		var order []string
+		initial := &TestState{name: "initial"}
+		b := &TestState{
+			name: "B",
+			entry: func(*EntryMachine, Event) state.Command {
+				order = append(order, "B-entry")
+				return nil
+			},
+		}
+		a := &TestState{
+			name: "A",
+			entry: func(*EntryMachine, Event) state.Command {
+				order = append(order, "A-entry")
+				return state.Trigger(ChainEvent{})
+			},
+		}
+		g, err := state.NewGraph[State](
+			initial,
+			On[LoopEvent](initial, a),
+			On[ChainEvent](a, b),
 		)
 		require.NoError(t, err)
 
-		machine := state.NewMachine(graph, value)
+		machine := state.NewMachine(g, &TestValue{})
 		require.NoError(t, machine.Launch())
 
-		require.NoError(t, machine.Trigger(TransitionEvent{}))
-		assert.True(t, exitExecuted)
+		require.NoError(t, machine.Trigger(LoopEvent{}))
+		assert.Equal(t, []string{"A-entry", "B-entry"}, order)
 	})
-}
 
-type tracerCall struct {
-	from, to State
-	event    state.Event
-}
+	t.Run("a long chain does not exhaust the stack", func(t *testing.T) {
+		const loops = 100000
+		entryCount := 0
+		firstDepth, lastDepth := 0, 0
+		looping := &TestState{name: "looping"}
+		looping.entry = func(*EntryMachine, Event) state.Command {
+			entryCount++
+			lastDepth = stackDepth()
+			if entryCount == 1 {
+				firstDepth = lastDepth
+			}
+			if entryCount > loops {
+				return nil
+			}
+			return state.Trigger(LoopEvent{})
+		}
+		g, err := state.NewGraph[State](looping, On[LoopEvent](looping, looping))
+		require.NoError(t, err)
 
-type recordingTracer struct {
-	calls []tracerCall
-}
+		machine := state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
 
-func (r *recordingTracer) Trace(from, to State, event state.Event) {
-	r.calls = append(r.calls, tracerCall{from: from, to: to, event: event})
+		assert.Equal(t, loops+1, entryCount)
+		assert.Equal(t, firstDepth, lastDepth)
+	})
+
+	t.Run("a chained event blocked by a Guarded is returned and the chain stops there", func(t *testing.T) {
+		guarded := &state.Guarded{Reason: errors.New("blocked")}
+		exitCount := 0
+		b := &TestState{name: "b"}
+		initial := &TestState{name: "initial"}
+		a := &TestState{
+			name: "a",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.OnExit(func(Event) *state.Guarded {
+					exitCount++
+					return guarded
+				}))
+				return state.Trigger(ChainEvent{})
+			},
+		}
+		g, err := state.NewGraph[State](
+			initial,
+			On[LoopEvent](initial, a),
+			On[ChainEvent](a, b),
+		)
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+
+		err = machine.Trigger(LoopEvent{})
+		var blocked *state.Guarded
+		require.ErrorAs(t, err, &blocked)
+		assert.Same(t, guarded, blocked)
+		current, err := machine.CurrentState()
+		require.NoError(t, err)
+		assert.Equal(t, a, current)
+
+		assert.Same(t, guarded, machine.Trigger(ChainEvent{}))
+		assert.Equal(t, 2, exitCount)
+	})
+
+	t.Run("a Command the package did not construct is returned as ErrUnknownCommand", func(t *testing.T) {
+		type embeddedCommand struct{ state.Command }
+		entryCount := 0
+		initial := &TestState{
+			name: "initial",
+			entry: func(*EntryMachine, Event) state.Command {
+				entryCount++
+				return embeddedCommand{Command: state.Trigger(ChainEvent{})}
+			},
+		}
+		g, err := state.NewGraph[State](initial, On[ChainEvent](initial, initial))
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		assert.ErrorIs(t, machine.Launch(), state.ErrUnknownCommand)
+		assert.Equal(t, 1, entryCount)
+		current, err := machine.CurrentState()
+		require.NoError(t, err)
+		assert.Equal(t, initial, current)
+	})
+
+	t.Run("a nil event returned by Entry is returned as ErrNilEvent", func(t *testing.T) {
+		exitCount := 0
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.OnExit(func(Event) *state.Guarded {
+					exitCount++
+					return nil
+				}))
+				return state.Trigger(nil)
+			},
+		}
+		g, err := state.NewGraph[State](initial)
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		assert.ErrorIs(t, machine.Launch(), state.ErrNilEvent)
+		assert.Equal(t, 0, exitCount)
+		current, err := machine.CurrentState()
+		require.NoError(t, err)
+		assert.Equal(t, initial, current)
+	})
+
+	t.Run("a Stop returned by Entry stops the machine once Entry returns", func(t *testing.T) {
+		var machine *state.Machine[State, *TestValue]
+		var order []string
+		var exitEvents []Event
+		initial := &TestState{name: "initial"}
+		initial.entry = func(m *EntryMachine, _ Event) state.Command {
+			order = append(order, "entry")
+			require.NoError(t, m.OnExit(func(event Event) *state.Guarded {
+				order = append(order, "exit")
+				exitEvents = append(exitEvents, event)
+				return nil
+			}))
+			return state.Stop()
+		}
+		g, err := state.NewGraph[State](initial)
+		require.NoError(t, err)
+
+		tracer := &recordingTracer{}
+		machine = state.NewMachine(g, &TestValue{}, state.WithTracer[State](tracer))
+		require.NoError(t, machine.Launch())
+
+		assert.Equal(t, []string{"entry", "exit"}, order)
+		assert.Equal(t, []Event{nil}, exitEvents)
+		assert.Equal(t, []Transition{{To: initial}, {From: initial}}, tracer.calls)
+		_, err = machine.CurrentState()
+		assert.ErrorIs(t, err, state.ErrNotLaunched)
+	})
+
+	t.Run("a Stop returned by a chained Entry ends the chain and Trigger returns no error", func(t *testing.T) {
+		b := &TestState{
+			name: "b",
+			entry: func(*EntryMachine, Event) state.Command {
+				return state.Stop()
+			},
+		}
+		a := &TestState{
+			name: "a",
+			entry: func(*EntryMachine, Event) state.Command {
+				return state.Trigger(ChainEvent{})
+			},
+		}
+		initial := &TestState{name: "initial"}
+		g, err := state.NewGraph[State](
+			initial,
+			On[LoopEvent](initial, a),
+			On[ChainEvent](a, b),
+		)
+		require.NoError(t, err)
+
+		tracer := &recordingTracer{}
+		machine := state.NewMachine(g, &TestValue{}, state.WithTracer[State](tracer))
+		require.NoError(t, machine.Launch())
+
+		require.NoError(t, machine.Trigger(LoopEvent{}))
+		assert.Equal(t, []Transition{
+			{To: initial},
+			{From: initial, To: a, Event: LoopEvent{}},
+			{From: a, To: b, Event: ChainEvent{}},
+			{From: b},
+		}, tracer.calls)
+		_, err = machine.CurrentState()
+		assert.ErrorIs(t, err, state.ErrNotLaunched)
+	})
+
+	t.Run("a returned Stop cancels the timers of the visit", func(t *testing.T) {
+		dispatcher := eventloop.NewDispatcher(baseTime)
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.AfterFunc(dispatcher, time.Second, func(*AfterFuncMachine) {
+					t.Error("a timer of a stopped visit must not run")
+				}))
+				return state.Stop()
+			},
+		}
+		g, err := state.NewGraph[State](initial)
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+
+		assert.Equal(t, 0, machine.ActiveTimerCount())
+		require.NoError(t, dispatcher.FastForward(baseTime.Add(2*time.Second)))
+	})
+
+	t.Run("the handle is valid inside the exit action of a returned Stop and its timer is canceled", func(t *testing.T) {
+		dispatcher := eventloop.NewDispatcher(baseTime)
+		var errs []error
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.OnExit(func(Event) *state.Guarded {
+					errs = append(errs,
+						m.OnExit(func(Event) *state.Guarded { return nil }),
+						m.AfterFunc(dispatcher, time.Second, func(*AfterFuncMachine) {
+							t.Error("a timer of a stopped visit must not run")
+						}))
+					return nil
+				}))
+				return state.Stop()
+			},
+		}
+		g, err := state.NewGraph[State](initial)
+		require.NoError(t, err)
+
+		machine := state.NewMachine(g, &TestValue{})
+		require.NoError(t, machine.Launch())
+
+		require.Len(t, errs, 2)
+		assert.ErrorIs(t, errs[0], state.ErrExitActionRegistered)
+		assert.NoError(t, errs[1])
+		assert.Equal(t, 0, machine.ActiveTimerCount())
+		require.NoError(t, dispatcher.FastForward(baseTime.Add(2*time.Second)))
+	})
 }
 
 func TestMachine_Tracer(t *testing.T) {
 	type NextEvent struct{}
-	type BlockedEvent struct{}
+	type UndefinedEvent struct{}
 
-	t.Run("Trace is called with (nil, initial, nil) on Launch", func(t *testing.T) {
-		value := &TestValue{Map: make(map[string]any)}
-		initialState := &TestState{name: "initial"}
-
-		graph, err := state.NewGraph[State](initialState)
+	t.Run("Trace records the initial transition on Launch", func(t *testing.T) {
+		initial := &TestState{name: "initial"}
+		g, err := state.NewGraph[State](initial)
 		require.NoError(t, err)
 
 		tracer := &recordingTracer{}
-		machine := state.NewMachine(graph, value, state.WithTracer[State](tracer))
+		machine := state.NewMachine(g, &TestValue{}, state.WithTracer[State](tracer))
 		require.NoError(t, machine.Launch())
 
-		require.Len(t, tracer.calls, 1)
-		assert.Nil(t, tracer.calls[0].from)
-		assert.Equal(t, initialState, tracer.calls[0].to)
-		assert.Nil(t, tracer.calls[0].event)
+		assert.Equal(t, []Transition{{From: nil, To: initial, Event: nil}}, tracer.calls)
 	})
 
-	t.Run("Trace is called with (from, to, event) on transition", func(t *testing.T) {
-		value := &TestValue{Map: make(map[string]any)}
-		initialState := &TestState{name: "initial"}
-		nextState := &TestState{name: "next"}
-
-		graph, err := state.NewGraph[State](
-			initialState,
-			On[NextEvent](initialState, nextState),
-		)
+	t.Run("Trace records From, To and Event on a transition", func(t *testing.T) {
+		initial := &TestState{name: "initial"}
+		next := &TestState{name: "next"}
+		g, err := state.NewGraph[State](initial, On[NextEvent](initial, next))
 		require.NoError(t, err)
 
 		tracer := &recordingTracer{}
-		machine := state.NewMachine(graph, value, state.WithTracer[State](tracer))
+		machine := state.NewMachine(g, &TestValue{}, state.WithTracer[State](tracer))
 		require.NoError(t, machine.Launch())
 
-		event := NextEvent{}
-		require.NoError(t, machine.Trigger(event))
-
+		require.NoError(t, machine.Trigger(NextEvent{}))
 		require.Len(t, tracer.calls, 2)
-		// first call is Launch, second call is the transition
-		assert.Nil(t, tracer.calls[0].from)
-		assert.Equal(t, initialState, tracer.calls[0].to)
-		assert.Equal(t, initialState, tracer.calls[1].from)
-		assert.Equal(t, nextState, tracer.calls[1].to)
-		assert.Equal(t, event, tracer.calls[1].event)
+		assert.Equal(t, Transition{From: initial, To: next, Event: NextEvent{}}, tracer.calls[1])
+	})
+
+	t.Run("a blocked transition is not traced", func(t *testing.T) {
+		next := &TestState{name: "next"}
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.OnExit(func(Event) *state.Guarded {
+					return &state.Guarded{Reason: errors.New("blocked")}
+				}))
+				return nil
+			},
+		}
+		g, err := state.NewGraph[State](initial, On[NextEvent](initial, next))
+		require.NoError(t, err)
+
+		tracer := &recordingTracer{}
+		machine := state.NewMachine(g, &TestValue{}, state.WithTracer[State](tracer))
+		require.NoError(t, machine.Launch())
+
+		require.Error(t, machine.Trigger(NextEvent{}))
+		assert.Equal(t, []Transition{{To: initial}}, tracer.calls)
+	})
+
+	t.Run("an event with no transition is not traced", func(t *testing.T) {
+		initial := &TestState{name: "initial"}
+		g, err := state.NewGraph[State](initial)
+		require.NoError(t, err)
+
+		tracer := &recordingTracer{}
+		machine := state.NewMachine(g, &TestValue{}, state.WithTracer[State](tracer))
+		require.NoError(t, machine.Launch())
+
+		require.Error(t, machine.Trigger(UndefinedEvent{}))
+		assert.Equal(t, []Transition{{To: initial}}, tracer.calls)
+	})
+
+	t.Run("Trace records the last state and a zero To on Stop", func(t *testing.T) {
+		initial := &TestState{name: "initial"}
+		g, err := state.NewGraph[State](initial)
+		require.NoError(t, err)
+
+		tracer := &recordingTracer{}
+		machine := state.NewMachine(g, &TestValue{}, state.WithTracer[State](tracer))
+		require.NoError(t, machine.Launch())
+
+		require.NoError(t, machine.Stop())
+		require.Len(t, tracer.calls, 2)
+		assert.Equal(t, Transition{From: initial, To: nil, Event: nil, Guarded: nil}, tracer.calls[1])
+	})
+
+	t.Run("Trace records the Guarded a stop overrode", func(t *testing.T) {
+		guarded := &state.Guarded{Reason: errors.New("blocked")}
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.OnExit(func(Event) *state.Guarded {
+					return guarded
+				}))
+				return nil
+			},
+		}
+		g, err := state.NewGraph[State](initial)
+		require.NoError(t, err)
+
+		tracer := &recordingTracer{}
+		machine := state.NewMachine(g, &TestValue{}, state.WithTracer[State](tracer))
+		require.NoError(t, machine.Launch())
+
+		require.NoError(t, machine.Stop())
+		require.Len(t, tracer.calls, 2)
+		assert.Equal(t, Transition{From: initial, To: nil, Event: nil, Guarded: guarded}, tracer.calls[1])
+	})
+
+	t.Run("Trace runs after the exit action and before Entry", func(t *testing.T) {
+		var order []string
+		next := &TestState{
+			name: "next",
+			entry: func(*EntryMachine, Event) state.Command {
+				order = append(order, "entry")
+				return nil
+			},
+		}
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.OnExit(func(Event) *state.Guarded {
+					order = append(order, "exit")
+					return nil
+				}))
+				return nil
+			},
+		}
+		g, err := state.NewGraph[State](initial, On[NextEvent](initial, next))
+		require.NoError(t, err)
+
+		tracer := &funcTracer{f: func(Transition) {
+			order = append(order, "trace")
+		}}
+		machine := state.NewMachine(g, &TestValue{}, state.WithTracer[State](tracer))
+		require.NoError(t, machine.Launch())
+		order = nil
+
+		require.NoError(t, machine.Trigger(NextEvent{}))
+		assert.Equal(t, []string{"exit", "trace", "entry"}, order)
 	})
 
 	t.Run("Trace is recorded before Entry on Launch, even if Entry panics", func(t *testing.T) {
-		value := &TestValue{Map: make(map[string]any)}
-		panicState := &TestState{
-			name: "panic",
-			entry: func(_ *EntryMachine, _ Event) {
-				panic("entry panic")
+		initial := &TestState{
+			name: "initial",
+			entry: func(*EntryMachine, Event) state.Command {
+				panic("entry failed")
 			},
 		}
-
-		graph, err := state.NewGraph[State](panicState)
+		g, err := state.NewGraph[State](initial)
 		require.NoError(t, err)
 
 		tracer := &recordingTracer{}
-		machine := state.NewMachine(graph, value, state.WithTracer[State](tracer))
+		machine := state.NewMachine(g, &TestValue{}, state.WithTracer[State](tracer))
 
-		assert.PanicsWithValue(t, "entry panic", func() {
+		assert.Panics(t, func() {
 			_ = machine.Launch()
 		})
-
-		require.Len(t, tracer.calls, 1)
-		assert.Nil(t, tracer.calls[0].from)
-		assert.Equal(t, panicState, tracer.calls[0].to)
+		assert.Equal(t, []Transition{{To: initial}}, tracer.calls)
 	})
 
 	t.Run("Trace is recorded before Entry on Trigger, even if Entry panics", func(t *testing.T) {
-		value := &TestValue{Map: make(map[string]any)}
-		initialState := &TestState{name: "initial"}
-		panicState := &TestState{
-			name: "panic",
-			entry: func(_ *EntryMachine, _ Event) {
-				panic("entry panic")
+		initial := &TestState{name: "initial"}
+		next := &TestState{
+			name: "next",
+			entry: func(*EntryMachine, Event) state.Command {
+				panic("entry failed")
 			},
 		}
-
-		graph, err := state.NewGraph[State](
-			initialState,
-			On[NextEvent](initialState, panicState),
-		)
+		g, err := state.NewGraph[State](initial, On[NextEvent](initial, next))
 		require.NoError(t, err)
 
 		tracer := &recordingTracer{}
-		machine := state.NewMachine(graph, value, state.WithTracer[State](tracer))
+		machine := state.NewMachine(g, &TestValue{}, state.WithTracer[State](tracer))
 		require.NoError(t, machine.Launch())
-		require.Len(t, tracer.calls, 1)
 
-		event := NextEvent{}
-		assert.PanicsWithValue(t, "entry panic", func() {
-			_ = machine.Trigger(event)
+		assert.Panics(t, func() {
+			_ = machine.Trigger(NextEvent{})
 		})
-
 		require.Len(t, tracer.calls, 2)
-		assert.Equal(t, initialState, tracer.calls[1].from)
-		assert.Equal(t, panicState, tracer.calls[1].to)
-		assert.Equal(t, event, tracer.calls[1].event)
+		assert.Equal(t, Transition{From: initial, To: next, Event: NextEvent{}}, tracer.calls[1])
 	})
 
-	t.Run("Trace is not called when exit-action blocks with Guarded", func(t *testing.T) {
-		value := &TestValue{Map: make(map[string]any)}
-		nextState := &TestState{name: "next"}
-		initialState := &TestState{
-			name: "initial",
-			entry: func(machine *EntryMachine, event Event) {
-				err := machine.OnExit(func(_ *state.ExitMachine[*TestValue], _ Event) *state.Guarded {
-					return &state.Guarded{Reason: errors.New("blocked")}
-				})
-				require.NoError(t, err)
-			},
-		}
-
-		graph, err := state.NewGraph[State](
-			initialState,
-			On[BlockedEvent](initialState, nextState),
-		)
+	t.Run("Launch, Trigger and Stop from inside Trace are refused", func(t *testing.T) {
+		var machine *state.Machine[State, *TestValue]
+		var errs []error
+		initial := &TestState{name: "initial"}
+		next := &TestState{name: "next"}
+		g, err := state.NewGraph[State](initial, On[NextEvent](initial, next))
 		require.NoError(t, err)
 
-		tracer := &recordingTracer{}
-		machine := state.NewMachine(graph, value, state.WithTracer[State](tracer))
+		tracer := &funcTracer{f: func(Transition) {
+			errs = append(errs, machine.Launch(), machine.Trigger(NextEvent{}), machine.Stop())
+		}}
+		machine = state.NewMachine(g, &TestValue{}, state.WithTracer[State](tracer))
 		require.NoError(t, machine.Launch())
 
-		// Launch recorded one call; blocked transition must not add another.
-		require.Len(t, tracer.calls, 1)
-
-		err = machine.Trigger(BlockedEvent{})
-		require.Error(t, err)
-		assert.Len(t, tracer.calls, 1)
-	})
-
-	t.Run("Trace is called with (last, nil, nil) on Stop", func(t *testing.T) {
-		value := &TestValue{Map: make(map[string]any)}
-		initialState := &TestState{name: "initial"}
-		nextState := &TestState{name: "next"}
-
-		graph, err := state.NewGraph[State](
-			initialState,
-			On[NextEvent](initialState, nextState),
-		)
+		require.Len(t, errs, 3)
+		assert.ErrorIs(t, errs[0], state.ErrInCallback)
+		assert.ErrorIs(t, errs[1], state.ErrInTransition)
+		assert.ErrorIs(t, errs[2], state.ErrInTransition)
+		current, err := machine.CurrentState()
 		require.NoError(t, err)
-
-		tracer := &recordingTracer{}
-		machine := state.NewMachine(graph, value, state.WithTracer[State](tracer))
-		require.NoError(t, machine.Launch())
-		require.NoError(t, machine.Trigger(NextEvent{}))
-		require.Len(t, tracer.calls, 2)
-
-		require.NoError(t, machine.Stop())
-
-		require.Len(t, tracer.calls, 3)
-		assert.Equal(t, nextState, tracer.calls[2].from)
-		assert.Nil(t, tracer.calls[2].to)
-		assert.Nil(t, tracer.calls[2].event)
+		assert.Equal(t, initial, current)
 	})
 
 	t.Run("Machine without tracer does not panic", func(t *testing.T) {
-		value := &TestValue{Map: make(map[string]any)}
-		initialState := &TestState{name: "initial"}
-		nextState := &TestState{name: "next"}
-
-		graph, err := state.NewGraph[State](
-			initialState,
-			On[NextEvent](initialState, nextState),
-		)
+		guard := false
+		initial := &TestState{
+			name: "initial",
+			entry: func(m *EntryMachine, _ Event) state.Command {
+				require.NoError(t, m.OnExit(func(Event) *state.Guarded {
+					if guard {
+						return &state.Guarded{Reason: errors.New("blocked")}
+					}
+					return nil
+				}))
+				return nil
+			},
+		}
+		g, err := state.NewGraph[State](initial, On[NextEvent](initial, initial))
 		require.NoError(t, err)
 
-		machine := state.NewMachine(graph, value)
+		machine := state.NewMachine(g, &TestValue{})
 		require.NoError(t, machine.Launch())
 		require.NoError(t, machine.Trigger(NextEvent{}))
+
+		guard = true
+		require.Error(t, machine.Trigger(NextEvent{}))
+		require.Error(t, machine.Trigger(UndefinedEvent{}))
 		require.NoError(t, machine.Stop())
 	})
+}
+
+// funcTracer reports every Transition to f.
+type funcTracer struct {
+	f func(t Transition)
+}
+
+func (r *funcTracer) Trace(t Transition) {
+	r.f(t)
+}
+
+// stackDepth returns the number of frames above the caller, to compare the stack
+// the machine runs a chained Entry on.
+func stackDepth() int {
+	var pcs [1024]uintptr
+	return runtime.Callers(0, pcs[:])
 }

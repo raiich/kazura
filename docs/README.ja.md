@@ -47,6 +47,8 @@ import (
 // 可読性向上のための型エイリアス
 type State = state.State[*VendingMachine]
 type Event = state.Event
+type EntryMachine = state.EntryMachine[*VendingMachine]
+type AfterFuncMachine = state.AfterFuncMachine[*VendingMachine]
 
 // 状態グラフを定義
 stateGraph := state.NewGraph[State](
@@ -74,18 +76,21 @@ stateDiagram-v2
 
 各状態は `Entry` メソッドで遷移時の動作を定義します。
 
+`Entry` は次の動作を返します。`state.Trigger(event)` ならそのイベントを処理し、`nil` なら現在の状態に留まります。
+
 ```go
 // 初期状態：マシンはアイドル状態
 type InitialState struct{}
 
-func (s InitialState) Entry(machine *EntryMachine, event Event) {
+func (s InitialState) Entry(machine *EntryMachine, event Event) state.Command {
     machine.Value().Coins = 0  // コイン数をリセット
+    return nil
 }
 
 // 待機状態：コインと商品選択を受け付ける
 type WaitingState struct{}
 
-func (s WaitingState) Entry(machine *EntryMachine, event Event) {
+func (s WaitingState) Entry(machine *EntryMachine, event Event) state.Command {
     vendingMachine := machine.Value()
 
     // コインイベントを処理
@@ -96,7 +101,7 @@ func (s WaitingState) Entry(machine *EntryMachine, event Event) {
     }
 
     // ガード条件：状態遷移を条件付きで制御
-    machine.OnExit(func(machine *ExitMachine, event Event) *state.Guarded {
+    machine.OnExit(func(event Event) *state.Guarded {
         switch e := event.(type) {
         case *ButtonEvent:
             // コーヒーは2コイン必要
@@ -113,19 +118,17 @@ func (s WaitingState) Entry(machine *EntryMachine, event Event) {
     machine.AfterFunc(vendingMachine.Dispatcher, 10*time.Second, func(machine *AfterFuncMachine) {
         machine.Trigger(DoneEvent("timeout"))
     })
+    return nil
 }
 
 // 注ぎ状態：選択した商品を提供
 type PouringState struct{}
 
-func (s PouringState) Entry(machine *EntryMachine, event Event) {
+func (s PouringState) Entry(machine *EntryMachine, event Event) state.Command {
     slog.Info("pouring", "item", event.(*ButtonEvent).Item)
 
-    // 非同期処理：状態遷移後に実行
-    machine.AfterEntry(func(machine *AfterEntryMachine) {
-        // 注ぎ完了
-        machine.Trigger(DoneEvent("done"))
-    })
+    // 注ぎ完了：Entry から戻るとマシンがこの遷移を行う
+    return state.Trigger(DoneEvent("done"))
 }
 ```
 
@@ -187,7 +190,7 @@ func main() {
 - **状態遷移制御** - 各状態の `Entry` メソッドで遷移時の動作を実装
 - **ガード条件** - `OnExit` で条件付き状態遷移を制御
 - **タイムアウト処理** - `AfterFunc` で時間ベースの自動遷移
-- **非同期処理** - `AfterEntry` で遷移後の非同期処理
+- **連鎖遷移** - `Entry` が返した `state.Trigger` で次の遷移を行う
 - **イベントディスパッチ** - `eventloop.Dispatcher` でイベントの順序制御
 - **仮想時間** - `FastForward` でテスト用の時間制御
 - **状態遷移トレース** - `state.WithTracer` でロギングやデバッグ向けに状態遷移を観測

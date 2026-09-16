@@ -13,9 +13,8 @@ type State = state.State[*VendingMachine]
 type Event = state.Event
 
 type EntryMachine = state.EntryMachine[*VendingMachine]
-type ExitMachine = state.ExitMachine[*VendingMachine]
-type AfterEntryMachine = state.AfterEntryMachine[*VendingMachine]
 type AfterFuncMachine = state.AfterFuncMachine[*VendingMachine]
+type Transition = state.Transition[State]
 
 // On creates a state transition edge for the given event type.
 func On[E Event](from, to State) state.Edge[State] {
