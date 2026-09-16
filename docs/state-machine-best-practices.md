@@ -129,10 +129,8 @@ func (s InitialState) Entry(machine *EntryMachine, event Event) state.Command {
 ```
 
 **Key Points**:
-- `Entry` method is called every time the state is entered
-- `event` parameter is the triggered event (`nil` on Launch)
 - Access data via `machine.Value()`
-- The return value is `state.Trigger(event)` to process an event next, `state.Stop()` to stop the machine, or `nil` to stay
+- What `Entry` receives and what its return value means is the doc of `state.State`
 
 ### State Interface Customization (Optional)
 
@@ -238,8 +236,7 @@ func (s WaitingState) Entry(machine *EntryMachine, event Event) state.Command {
 ```
 
 **Features**:
-- When state transitions occur, timers registered in that state are automatically canceled
-- Timer callbacks run between transitions, so they may `Trigger` or `Stop` through the `AfterFuncMachine`
+- The timer belongs to the visit; cancellation and what the callback may call are the docs of `EntryMachine.AfterFunc` and `AfterFuncMachine`
 - Synchronization is guaranteed via `Dispatcher` (safe for concurrent processing)
 - In tests, you can advance time with `Dispatcher.FastForward()`
 
@@ -258,12 +255,11 @@ func (s PouringState) Entry(machine *EntryMachine, event state.Event) state.Comm
 
 **Use Cases**:
 - When you want to transition to the next state immediately after Entry initialization
-- `Trigger` and `Stop` cannot be called from `Entry` or an exit action (they report that the machine is in a transition); returning `state.Trigger` is how a state moves on
-- To stop from `Entry`, return `state.Stop()`; the machine stops once `Entry` returns
+- `Entry` cannot call `Trigger` or `Stop` itself (`state.Machine` doc); the returned `state.Command` is how a state moves on or stops
 
 #### Execution Order in Chained Transitions
 
-The machine processes one event at a time, so transitions never nest. `Trigger` runs the exit action of the state being left, notifies the `Tracer`, calls the destination `Entry`, and repeats with the event `Entry` returned through `state.Trigger` until one returns `nil`.
+Transitions never nest: the machine performs the transition an `Entry` returns after that `Entry` has returned.
 
 Example: State A → State B → State C, where State B's Entry returns the Trigger for the second transition:
 
@@ -274,7 +270,7 @@ Example: State A → State B → State C, where State B's Entry returns the Trig
 4. Trigger returns
 ```
 
-**Key Point**: The `Launch` or `Trigger` that started the chain returns the first failure of the chain (an event with no transition or a `*Guarded`), leaving the machine in the state whose `Entry` returned the failing event.
+**Key Point**: What the caller gets when a chained event fails is the doc of `Machine.Trigger`.
 
 ### Dispatcher Selection
 
@@ -352,9 +348,7 @@ err := machine.Trigger(&ButtonEvent{Item: "coffee"})
 
 **Key Points**:
 - `OnExit` is registered in each Entry and executed when exiting that state
-- Returning `*state.Guarded` blocks the state transition and returns it to the caller as is; the machine stays in the state and the same exit action guards the next event
-- Returning `nil` allows the transition
-- On `Stop` the exit action runs with a `nil` event and cannot block the stop; the `*state.Guarded` it returns is reported to the `Tracer`
+- What a `*state.Guarded` does is the doc of `EntryMachine.OnExit`; how the caller receives it, that of `Machine.Trigger`
 
 ## Observability
 
@@ -403,13 +397,7 @@ machine := state.NewMachine(stateGraph, &data, state.WithTracer[State](transitio
 `WithTracer` is required because Go cannot infer `S` from the receiver type of
 `transitionLogger.Trace` alone.
 
-**Call Semantics**:
-- Called after an exit action succeeds and before the destination state's `Entry` is invoked
-- On `Launch`, `From` is the zero value of `S` and `Event` is `nil`
-- On `Stop`, `From` is the state the machine was in, `To` is the zero value of `S`, `Event` is `nil`, and `Guarded` carries the guard the stop overrode
-- **Not** called when a transition is blocked by a `Guarded` from an exit action, or when an event has no transition
-- Recorded even if the destination state's `Entry` panics — useful for post-mortem debugging
-- Invoked synchronously on the Machine's goroutine; implementations must not block
+**Call Semantics**: when `Trace` is called and what `Transition` carries on `Launch` and `Stop` are the docs of `state.Tracer` and `state.Transition`.
 
 **Use Cases**:
 - Structured transition logging without cluttering `Entry` methods
@@ -584,7 +572,7 @@ stateDiagram-v2
 
 ### Common Mistakes
 
-1. **Direct Trigger in Entry**: `Trigger` cannot be called from `Entry` (the machine is in a transition); return `state.Trigger(event)` from `Entry` instead
+1. **Direct Trigger in Entry**: return `state.Trigger(event)` from `Entry` instead
 2. **Timers without Dispatcher**: Use `machine.AfterFunc` instead of `time.AfterFunc`
 3. **Forgetting OnExit Registration**: Don't forget to register guard conditions in `Entry`
 4. **Missing State Transition Graph Definitions**: Explicitly define all transitions
