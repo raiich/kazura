@@ -168,16 +168,11 @@ func (m *Machine[S, T]) triggerOnce(event Event) error {
 	}
 
 	currentNode := m.manager.Get()
-	eventType := reflect.TypeOf(event)
 
 	// Find transition for the event
-	nextNode, found := currentNode.FindNext(eventType)
+	nextNode, found := m.graph.FindNext(currentNode, reflect.TypeOf(event))
 	if !found {
-		// Try wildcard transitions
-		nextNode, found = m.graph.Wildcards.FindNext(eventType)
-		if !found {
-			return fmt.Errorf("no transition found for event %T from state %v", event, currentNode.State)
-		}
+		return fmt.Errorf("no transition found for event %T from state %v", event, currentNode.State)
 	}
 
 	// Execute exit callback if present

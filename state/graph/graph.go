@@ -78,6 +78,15 @@ type Graph[S State, E Event] struct {
 	Wildcards Wildcards[S, E]
 }
 
+// FindNext returns the destination of event from node and true when a transition
+// exists: the node's own transition, or else the wildcard one.
+func (g *Graph[S, E]) FindNext(node *Node[S, E], event E) (*Node[S, E], bool) {
+	if next, found := node.FindNext(event); found {
+		return next, true
+	}
+	return g.Wildcards.FindNext(event)
+}
+
 // getEdges converts a Graph back to its Edge representation.
 // This is useful for dumpers that work with edge lists rather than the graph structure.
 func (g *Graph[S, E]) getEdges() []Edge[S, E] {

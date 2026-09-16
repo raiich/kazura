@@ -133,6 +133,43 @@ func TestNewGraph(t *testing.T) {
 	})
 }
 
+func TestGraph_FindNext(t *testing.T) {
+	type (
+		Event1 struct{}
+		Event2 struct{}
+		Event3 struct{}
+	)
+	type (
+		State0 struct{}
+		State1 struct{}
+		State2 struct{}
+	)
+	g, err := NewGraph(
+		State1{},
+		On[*Event1](State1{}, State2{}),
+		On[*Event2](nil, State0{}),
+	)
+	assert.NoError(t, err)
+
+	t.Run("the node's own transition", func(t *testing.T) {
+		next, found := g.FindNext(g.InitialNode, reflect.TypeFor[*Event1]())
+		assert.True(t, found)
+		assert.Equal(t, State2{}, next.State)
+	})
+
+	t.Run("a wildcard transition", func(t *testing.T) {
+		next, found := g.FindNext(g.InitialNode, reflect.TypeFor[*Event2]())
+		assert.True(t, found)
+		assert.Equal(t, State0{}, next.State)
+	})
+
+	t.Run("no transition", func(t *testing.T) {
+		next, found := g.FindNext(g.InitialNode, reflect.TypeFor[*Event3]())
+		assert.False(t, found)
+		assert.Nil(t, next)
+	})
+}
+
 // testState is a marker interface for state types in tests.
 type testState interface {
 }
