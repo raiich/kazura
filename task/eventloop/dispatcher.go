@@ -10,13 +10,10 @@ import (
 	"github.com/raiich/kazura/task/internal"
 )
 
-// Dispatcher manages scheduled tasks with controllable time progression.
-// It maintains an ordered queue of tasks and allows manual time advancement
-// for applications requiring precise timing control, such as game loops.
+// Dispatcher runs the functions submitted to it only while
+// [Dispatcher.FastForward] advances its simulated time.
 type Dispatcher struct {
-	// mu is used for concurrent access
-	mu sync.Mutex
-	// Current simulated time
+	mu  sync.Mutex
 	now time.Time
 
 	ended bool
@@ -98,9 +95,9 @@ func (d *Dispatcher) shutdown() {
 	}
 }
 
-// AfterFunc schedules a function to be executed after the specified duration.
-// Returns a Timer that can be used to cancel the scheduled task.
-// The task is inserted into the queue maintaining chronological order.
+// AfterFunc schedules f to run once the simulated time has advanced by duration.
+//
+// See [task.Timer.Stop] for Stop semantics.
 func (d *Dispatcher) AfterFunc(duration time.Duration, f func()) task.Timer {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -181,22 +178,19 @@ func NewDispatcher(now time.Time) *Dispatcher {
 
 // scheduledTask represents a task scheduled to execute at a specific time.
 type scheduledTask struct {
-	// When the task should execute
-	at time.Time
-
+	at   time.Time
 	task *internal.PendingTask
 }
 
 // taskTimer implements the task.Timer interface for canceling scheduled tasks.
 type taskTimer struct {
-	// Reference to the dispatcher that owns this timer
 	dispatcher *Dispatcher
-	// The scheduled task this timer controls
-	task *internal.PendingTask
+	task       *internal.PendingTask
 }
 
-// Stop cancels the scheduled task.
-// Returns true if the task was successfully canceled, false if it was already executed or canceled.
+// Stop cancels the scheduled task; see [task.Timer.Stop]. A task the dispatcher
+// canceled on shutdown is still queued, so Stop still reports that it prevented
+// the function.
 func (t *taskTimer) Stop() bool {
 	return t.dispatcher.dropTask(t.task)
 }

@@ -6,38 +6,34 @@ import (
 	"github.com/raiich/kazura/task"
 )
 
-// Manager manages a single state value with support for timer-based operations.
-// It supports multiple timers and automatically cancels all timers when the state changes.
+// Manager holds a value and the timers scheduled while it is current. Every Set
+// cancels those timers, so a timer never fires for a value that has been
+// replaced.
 //
-// This type is not safe for concurrent use and should only be accessed from a single goroutine.
+// A Manager must be used from a single goroutine.
 type Manager[S any] struct {
-	// The current state value
 	current S
-	// Active timerGroup
-	timers timerGroup
+	timers  timerGroup
 }
 
-// Get returns the current state value.
+// Get returns the current value.
 func (m *Manager[S]) Get() S {
 	return m.current
 }
 
-// Set updates the current state and cancels all active timers.
-// This ensures that timers from the previous state don't execute
-// after a state transition.
+// Set replaces the value and cancels the timers scheduled for the previous one.
 func (m *Manager[S]) Set(next S) {
-	// Cancel all active timers from the previous state
 	m.timers.Clear()
 	m.current = next
 }
 
-// AfterFunc schedules a function to execute after the specified duration.
-// The function will not execute if the state changes before the timer fires.
+// AfterFunc schedules f to run on dispatcher after d, for as long as the value
+// it was scheduled for stays current.
 func (m *Manager[S]) AfterFunc(dispatcher task.Dispatcher, d time.Duration, f func()) {
 	m.timers.AfterFunc(dispatcher, d, f)
 }
 
-// NewManager creates a new state manager with the zero value of type S as the initial state.
+// NewManager returns a Manager holding the zero value of S.
 func NewManager[S any]() *Manager[S] {
 	return &Manager[S]{}
 }

@@ -122,7 +122,6 @@ func TestDispatcher_Serve(t *testing.T) {
 			cancel() // Stop dispatcher
 		}()
 
-		// Start Serve in a goroutine
 		var serveErr error
 		go func() {
 			serveErr = dispatcher.Serve(ctx)
@@ -137,7 +136,6 @@ func TestDispatcher_Serve(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		dispatcher := NewDispatcher()
 
-		// Start Serve in a goroutine
 		var serveErr error
 		go func() {
 			serveErr = dispatcher.Serve(ctx)
@@ -189,7 +187,6 @@ func TestDispatcher_Serve(t *testing.T) {
 		defer cancel()
 		dispatcher := NewDispatcher()
 
-		// Start Serve in a goroutine
 		var serveErr error
 		go func() {
 			serveErr = dispatcher.Serve(ctx)
@@ -208,7 +205,6 @@ func TestDispatcher_QueueBehavior(t *testing.T) {
 		defer cancel()
 		dispatcher := NewDispatcher()
 
-		// Start dispatcher
 		var serveErr error
 		go func() {
 			serveErr = dispatcher.Serve(ctx)
@@ -237,7 +233,6 @@ func TestDispatcher_QueueBehavior(t *testing.T) {
 		defer cancel()
 		dispatcher := NewDispatcher()
 
-		// Start dispatcher
 		var serveErr error
 		go func() {
 			serveErr = dispatcher.Serve(ctx)
@@ -245,14 +240,14 @@ func TestDispatcher_QueueBehavior(t *testing.T) {
 
 		var executedBefore, executedAfter bool
 
-		// Schedule task before cancellation
+		// Both timers are scheduled before the cancel; only the first one fires
+		// before it.
 		dispatcher.AfterFunc(1*time.Millisecond, func() {
 			executedBefore = true
 		})
 
 		time.Sleep(1 * time.Millisecond)
 
-		// Schedule task after cancellation
 		dispatcher.AfterFunc(1*time.Millisecond, func() {
 			executedAfter = true
 		})
@@ -264,8 +259,8 @@ func TestDispatcher_QueueBehavior(t *testing.T) {
 		synctest.Wait()
 
 		assert.ErrorIs(t, serveErr, context.Canceled, "Serve should return context.Canceled")
-		assert.True(t, executedBefore, "task scheduled before cancellation should execute")
-		assert.False(t, executedAfter, "task scheduled after cancellation should not execute")
+		assert.True(t, executedBefore, "task whose timer fired before the cancel should execute")
+		assert.False(t, executedAfter, "task whose timer fires after the cancel should not execute")
 	}))
 
 	t.Run("enqueue abandoned after context cancel", tasktest.WithSyncTest(func(t *testing.T) {
@@ -302,29 +297,24 @@ func TestDispatcher_Concurrency(t *testing.T) {
 		var shortCount, mediumCount, longCount int
 		const tasksPerCategory = 100
 
-		// Start dispatcher
 		var serveErr error
 		go func() {
 			serveErr = dispatcher.Serve(ctx)
 		}()
 
-		// Schedule tasks with different durations concurrently
 		for i := 0; i < tasksPerCategory; i++ {
-			// Short duration tasks
 			go func() {
 				dispatcher.AfterFunc(1*time.Millisecond, func() {
 					shortCount++
 				})
 			}()
 
-			// Medium duration tasks
 			go func() {
 				dispatcher.AfterFunc(10*time.Millisecond, func() {
 					mediumCount++
 				})
 			}()
 
-			// Long duration tasks
 			go func() {
 				dispatcher.AfterFunc(20*time.Millisecond, func() {
 					longCount++

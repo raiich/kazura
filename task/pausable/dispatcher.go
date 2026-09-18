@@ -1,6 +1,5 @@
-// Package pausable provides a Dispatcher wrapper that supports pausing and resuming timers.
-// When paused, all pending timers are suspended and their remaining durations are preserved.
-// On resume, timers are rescheduled with their remaining durations.
+// Package pausable provides a Dispatcher that wraps another [task.Dispatcher]
+// and can suspend its pending timers.
 package pausable
 
 import (
@@ -65,10 +64,11 @@ func (d *Dispatcher) stop(entry *trackedEntry) bool {
 	return true
 }
 
-// Pause suspends all tracked timers and records their remaining durations.
-// Timers that have already fired are unaffected. A remaining duration counts only
-// the time elapsed before Pause (the paused interval is excluded) and is never
-// negative. Pause returns an error if the dispatcher is already paused.
+// Pause suspends the pending timers, so none of them fires until Resume.
+// A timer's remaining duration counts only the time elapsed before Pause (the
+// paused interval is excluded) and is never negative. Timers that have already
+// fired are unaffected. Pause returns an error if the dispatcher is already
+// paused.
 func (d *Dispatcher) Pause() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -90,7 +90,7 @@ func (d *Dispatcher) Pause() error {
 	return nil
 }
 
-// Resume reschedules all tracked timers with their remaining durations.
+// Resume reschedules the suspended timers with their remaining durations.
 // Resume returns an error if the dispatcher is not paused.
 func (d *Dispatcher) Resume() error {
 	d.mu.Lock()

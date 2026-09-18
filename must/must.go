@@ -2,8 +2,7 @@
 // These functions help eliminate explicit error checking by panicking on failure conditions.
 package must
 
-// Must returns the value v if err is nil, otherwise panics with the error.
-// This is useful for eliminating error checks in situations where errors should be fatal.
+// Must returns v if err is nil, and panics with err otherwise.
 //
 // Example:
 //
@@ -15,20 +14,19 @@ func Must[T any](v T, err error) T {
 	return v
 }
 
-// NoError panics if err is not nil.
-// This is useful for asserting that an error should never occur.
+// NoError panics with err if it is not nil.
 func NoError(err error) {
 	if err != nil {
 		panic(err)
 	}
 }
 
-// Exist returns the value v if ok is true, otherwise panics.
-// This is useful for map lookups or channel receives where the value must exist.
+// Exist returns v if ok is true, and panics otherwise.
 //
 // Example:
 //
-//	value := must.Exist(m["key"])
+//	v, ok := m["key"]
+//	value := must.Exist(v, ok)
 func Exist[T any](v T, ok bool) T {
 	if !ok {
 		panic("value does not exist")
@@ -36,8 +34,7 @@ func Exist[T any](v T, ok bool) T {
 	return v
 }
 
-// NotExist returns the value v if ok is false, otherwise panics.
-// This is useful when you expect a value to not exist.
+// NotExist returns v if ok is false, and panics otherwise.
 func NotExist[T any](v T, ok bool) T {
 	if ok {
 		panic("value should not exist")
@@ -46,7 +43,6 @@ func NotExist[T any](v T, ok bool) T {
 }
 
 // True panics if v is false.
-// This is useful for asserting that a condition must be true.
 func True(v bool) {
 	if !v {
 		panic("assertion failed: expected true")
@@ -54,7 +50,6 @@ func True(v bool) {
 }
 
 // False panics if v is true.
-// This is useful for asserting that a condition must be false.
 func False(v bool) {
 	if v {
 		panic("assertion failed: expected false")

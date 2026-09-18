@@ -1,23 +1,23 @@
 // Package graph provides a generic, type-safe graph data structure
 // optimized for finite state machines and workflow modeling.
 //
-// This package supports creating directed graphs with typed nodes and transitions,
-// including wildcard transitions that can be triggered from any node.
+// A node is identified by the type of its state, or by its Name when the state
+// implements [Namer], so several nodes can share a type.
 //
 // # Basic Usage
 //
 //	type (
-//		LoginState struct{}
+//		LoginState    struct{}
 //		LoggedInState struct{}
-//		LoginEvent struct{}
+//		LoginEvent    struct{}
 //	)
 //
-//	g, err := graph.New(
+//	g, err := graph.New[any, reflect.Type](
 //		LoginState{},
-//		&graph.Edge[any, reflect.Type]{
-//			From: LoginState{},
+//		graph.Edge[any, reflect.Type]{
+//			From:  LoginState{},
 //			Event: reflect.TypeOf(LoginEvent{}),
-//			To: LoggedInState{},
+//			To:    LoggedInState{},
 //		},
 //	)
 //	if err != nil {
@@ -36,22 +36,13 @@
 //
 // # Wildcard Transitions
 //
-// Global transitions available from any state using nil as the source:
+// An edge with a nil From is taken from any node:
 //
-//	&graph.Edge[any, reflect.Type]{
-//		From: nil,  // nil indicates wildcard
+//	graph.Edge[any, reflect.Type]{
+//		From:  nil,
 //		Event: reflect.TypeOf(ErrorEvent{}),
-//		To: ErrorState{},
+//		To:    ErrorState{},
 //	}
-//
-// # Type Safety
-//
-// The package uses Go generics to ensure type safety:
-// - S: any type for state
-// - E: comparable type for transition conditions
-//
-// States implementing the Namer interface will be identified by their Name()
-// method rather than their type, allowing multiple instances of the same type.
 package graph
 
 import (
@@ -68,9 +59,7 @@ type State any
 // Common examples include reflect.Type for event types or string/int for simple events.
 type Event comparable
 
-// Graph represents a directed state transition graph with typed nodes and transitions.
-// It supports both regular transitions between specific nodes and wildcard transitions
-// that can be triggered from any node in the graph.
+// Graph is a directed state transition graph with typed nodes and transitions.
 type Graph[S State, E Event] struct {
 	// InitialNode is the starting Node of the Graph
 	InitialNode *Node[S, E]
@@ -88,12 +77,10 @@ func (g *Graph[S, E]) FindNext(node *Node[S, E], event E) (*Node[S, E], bool) {
 }
 
 // getEdges converts a Graph back to its Edge representation.
-// This is useful for dumpers that work with edge lists rather than the graph structure.
 func (g *Graph[S, E]) getEdges() []Edge[S, E] {
 	var ret []Edge[S, E]
 	var node *Node[S, E]
 
-	// Process wildcard transitions (transitions with nil From)
 	for i, event := range g.Wildcards.events {
 		ret = append(ret, Edge[S, E]{
 			Event: event,
@@ -103,10 +90,8 @@ func (g *Graph[S, E]) getEdges() []Edge[S, E] {
 
 	visited := make(map[*Node[S, E]]bool)
 	queue := []*Node[S, E]{g.InitialNode}
-	// Add wildcard destination nodes to queue for traversal
 	queue = append(queue, g.Wildcards.nextNodes...)
 
-	// Traverse all reachable nodes and collect their edges
 	for len(queue) > 0 {
 		node, queue = queue[0], queue[1:]
 		if visited[node] {
@@ -114,7 +99,6 @@ func (g *Graph[S, E]) getEdges() []Edge[S, E] {
 		}
 		visited[node] = true
 		queue = append(queue, node.nextNodes...)
-		// Convert each transition to an edge
 		for i, event := range node.events {
 			ret = append(ret, Edge[S, E]{
 				From:  node.State,
@@ -127,8 +111,10 @@ func (g *Graph[S, E]) getEdges() []Edge[S, E] {
 	return ret
 }
 
-// New creates a new Graph with the given initial state and edges.
-// Returns an error if validation fails.
+// New creates a Graph from the initial state and the edges. It returns an error
+// when an edge has a nil To, when two edges share an event from the same node or
+// as a wildcard, when one node identity carries different state values, or when
+// a node is unreachable from the initial node.
 func New[S State, E Event](init S, edges ...Edge[S, E]) (*Graph[S, E], error) {
 	registry := &nodeRegistry[S, E]{
 		names: make(map[string]*Node[S, E]),
@@ -143,12 +129,10 @@ func New[S State, E Event](init S, edges ...Edge[S, E]) (*Graph[S, E], error) {
 		return nil, fmt.Errorf("failed to handle edges: %w", err)
 	}
 
-	// Perform reachability analysis to detect unreachable nodes
-	// This ensures that every defined node can be reached through some path
 	visited := make(map[*Node[S, E]]bool)
 	queue := []*Node[S, E]{initialNode}
 
-	// Mark wildcard destinations as reachable since they can be accessed from any node
+	// Wildcard destinations are reachable from every node, so they seed the traversal.
 	for _, node := range registry.wilds {
 		if visited[node] {
 			continue
@@ -157,7 +141,6 @@ func New[S State, E Event](init S, edges ...Edge[S, E]) (*Graph[S, E], error) {
 		queue = append(queue, node.nextNodes...)
 	}
 
-	// Breadth-first traversal to mark all reachable nodes
 	var head *Node[S, E]
 	for len(queue) > 0 {
 		head, queue = queue[0], queue[1:]
@@ -165,7 +148,6 @@ func New[S State, E Event](init S, edges ...Edge[S, E]) (*Graph[S, E], error) {
 			continue
 		}
 		visited[head] = true
-		// Add all destination nodes of this node to the queue
 		queue = append(queue, head.nextNodes...)
 	}
 

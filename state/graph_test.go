@@ -13,16 +13,8 @@ import (
 	"github.com/raiich/kazura/task/eventloop"
 )
 
-// Verification policy (definition of done and falsification condition: state/machine_test.go):
-//
-//	Guaranteed: the shape of the graph NewGraph / On build (initial node, edges, wildcards),
-//	  that NewGraph reports the graph.New errors the Machine relies on (unreachable state, an event
-//	  declared twice from one state or as both an edge and a wildcard), and the Machine's
-//	  behavior when leaving through a wildcard (OnExit, timer cancellation).
-//	Not guaranteed: the rest of graph validation (state/graph's tests), precedence among
-//	  three or more wildcards.
-//	Not automated: none.
-//	Strength check required: "a wildcard transition runs the exit action and cancels the visit's timers"
+// Not guaranteed: the rest of graph validation (state/graph's tests), precedence among
+// three or more wildcards.
 
 func TestNewGraph(t *testing.T) {
 	type InputEvent struct{}

@@ -59,9 +59,8 @@ type nodeRegistry[S State, E Event] struct {
 }
 
 // GetOrCreate retrieves an existing node or creates a new one for the given state.
-// It enforces referential integrity by ensuring that the same logical node
-// (identified by name or type) always contains the exact same state value.
-// Returns an error if a node with the same identity but different state value already exists.
+// It returns an error when a node of the same identity already carries a
+// different state value.
 func (r *nodeRegistry[S, E]) GetOrCreate(s S) (*Node[S, E], error) {
 	node := r.getOrCreate(s)
 	if any(node.State) != any(s) {
@@ -70,12 +69,9 @@ func (r *nodeRegistry[S, E]) GetOrCreate(s S) (*Node[S, E], error) {
 	return node, nil
 }
 
-// getOrCreate is the internal method that implements the core node creation and lookup logic.
-// For types implementing Namer interface, it uses the custom name as the unique identifier.
-// For other types, it uses the Go reflect.Type as the identifier, ensuring type safety.
+// getOrCreate looks the node up by the state's Name when it implements Namer, and
+// by its reflect.Type otherwise.
 func (r *nodeRegistry[S, E]) getOrCreate(s S) *Node[S, E] {
-	// Check if element implements Namer interface for custom naming
-	// Named nodes are deduplicated by their Name() method
 	if namer, ok := any(s).(Namer); ok {
 		name := namer.Name()
 		if node, already := r.names[name]; already {
@@ -86,8 +82,6 @@ func (r *nodeRegistry[S, E]) getOrCreate(s S) *Node[S, E] {
 		return node
 	}
 
-	// Use type-based lookup for non-named elements
-	// Type-based nodes are deduplicated by their Go type
 	typ := reflect.TypeOf(s)
 	if node, already := r.types[typ]; already {
 		return node
@@ -97,22 +91,19 @@ func (r *nodeRegistry[S, E]) getOrCreate(s S) *Node[S, E] {
 	return node
 }
 
-// Handle processes and validates all provided edges, building the internal graph structure.
-// It separates edges into wildcard transitions (From field is nil) and regular transitions,
-// then processes each category with appropriate validation rules.
+// Handle validates the edges and builds the nodes they connect. Wildcard edges
+// (a nil From) are processed first, so a regular edge can be rejected for the
+// event a wildcard already takes.
 func (r *nodeRegistry[S, E]) Handle(edges []Edge[S, E]) error {
 	var wilds []Edge[S, E]
 	var es []Edge[S, E]
 
-	// Separate wildcard and regular edges, validating destination nodes
 	for _, edge := range edges {
 		from, to := edge.From, edge.To
-		// Validate that destination is not nil (source can be nil for wildcards)
 		if any(to) == nil {
 			transition := edge.Event
 			return fmt.Errorf("invalid edge: node is nil (%v -> %v: %v)", from, to, transition)
 		}
-		// Categorize edge based on source: nil source indicates wildcard
 		if any(from) == nil {
 			wilds = append(wilds, edge)
 		} else {
@@ -134,9 +125,8 @@ func (r *nodeRegistry[S, E]) Handle(edges []Edge[S, E]) error {
 	return nil
 }
 
-// handleWild processes a wildcard transition that can be triggered from any node in the graph.
-// It validates that no duplicate wildcard events exist, as each wildcard event
-// can only have one destination to maintain deterministic behavior.
+// handleWild registers a wildcard transition. An event may have only one
+// wildcard destination.
 func (r *nodeRegistry[S, E]) handleWild(transition E, to S) error {
 	node, err := r.GetOrCreate(to)
 	if err != nil {
@@ -149,11 +139,8 @@ func (r *nodeRegistry[S, E]) handleWild(transition E, to S) error {
 	return nil
 }
 
-// handle processes a regular transition between two specific nodes.
-// It validates that:
-// - No duplicate events exist from the same source node
-// - The event doesn't conflict with existing wildcard transitions
-// This ensures deterministic transition behavior.
+// handle registers a transition between two nodes. The event must not already
+// leave the source node, nor be taken by a wildcard.
 func (r *nodeRegistry[S, E]) handle(transition E, from, to S) error {
 	node, err := r.GetOrCreate(from)
 	if err != nil {
@@ -164,15 +151,11 @@ func (r *nodeRegistry[S, E]) handle(transition E, from, to S) error {
 		return fmt.Errorf("failed to get or create node %v: %w", asStringer(to), err)
 	}
 
-	// Check for duplicate transitions from the same node
-	// Each node can only have one transition per event to maintain determinism
 	for _, t := range node.events {
 		if t == transition {
 			return fmt.Errorf("transition %v already exists for node %v", transition, asStringer(from))
 		}
 	}
-	// Ensure transition doesn't conflict with wildcard transitions
-	// Wildcards take precedence, so regular transitions cannot override them
 	if _, already := r.wilds[transition]; already {
 		return fmt.Errorf("wildcard transition already exists: %v", transition)
 	}
@@ -182,14 +165,13 @@ func (r *nodeRegistry[S, E]) handle(transition E, from, to S) error {
 	return nil
 }
 
-// Namer interface allows custom naming of graph elements.
-// Elements implementing this interface will be identified by their Name() rather than their type.
+// Namer identifies a state by a name instead of by its type, so several states
+// of one type can be distinct nodes.
 type Namer interface {
 	Name() string
 }
 
-// asNamer converts any value to a Namer interface.
-// If the value implements Namer, returns it directly; otherwise uses its reflect.Type.
+// asNamer returns s as a Namer, falling back to its reflect.Type.
 func asNamer(s any) Namer {
 	if namer, ok := s.(Namer); ok {
 		return namer

@@ -22,7 +22,6 @@ func (m *Machine[S, T]) ActiveTimerCount() int {
 }
 
 // ActiveTimerCount returns the number of currently active timers.
-// This is primarily useful for testing and debugging.
 func (m *Manager[S]) ActiveTimerCount() int {
 	return len(m.timers.timers)
 }

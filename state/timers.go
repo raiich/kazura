@@ -7,7 +7,6 @@ import (
 )
 
 type timerGroup struct {
-	// Active timers
 	timers []*timerEntry
 }
 
@@ -46,6 +45,5 @@ func (m *timerGroup) Clear() {
 // Interface comparison can panic if the underlying type is not comparable,
 // so we compare *timerEntry pointers instead.
 type timerEntry struct {
-	// The underlying timer implementation
 	timer task.Timer
 }

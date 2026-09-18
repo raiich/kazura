@@ -13,14 +13,9 @@ import (
 //go:embed testdata/expected.log.txt
 var expectedLogTxt string
 
-// Verification policy (definition of done and falsification condition: state/machine_test.go):
-//
-//	Guaranteed: the log lines main's scenario emits match testdata/expected.log.txt.
-//	Not guaranteed: the log format itself (slog's handler), the 10 s timeout in real time
-//	  (driven by FastForward), failure paths absent from the golden, the stop Transition
-//	  (the scenario does not stop the machine).
-//	Not automated: none.
-//	Strength check required: "TestVendingMachine" (any changed line of the blocked scenario turns it red)
+// Not guaranteed: the log format itself (slog's handler), the 10 s timeout in real time
+// (driven by FastForward), failure paths absent from the golden, the stop Transition (the
+// scenario does not stop the machine).
 
 func TestVendingMachine(t *testing.T) {
 	// Setup: capture logs

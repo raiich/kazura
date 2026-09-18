@@ -12,16 +12,9 @@ import (
 	"github.com/raiich/kazura/task/eventloop"
 )
 
-// Verification policy (definition of done and falsification condition: state/machine_test.go):
-//
-//	Guaranteed: the errors Trigger / Stop / AfterFunc return on the AfterFuncMachine a timer
-//	  callback receives (errors.Is / errors.As), CurrentState after a transition, and that a
-//	  stale handle attaches nothing to the machine.
-//	Not guaranteed: timer firing order and cancellation (entrymachine_test.go), calling the
-//	  captured Machine directly (machine_test.go, "Machine.Trigger from a timer callback
-//	  performs the transition").
-//	Not automated: none.
-//	Strength check required: "the handle is stale after its own Trigger succeeds"
+// Not guaranteed: timer firing order and cancellation (entrymachine_test.go), calling the
+// captured Machine directly (machine_test.go, "Machine.Trigger from a timer callback
+// performs the transition").
 
 func TestAfterFuncMachine_Trigger(t *testing.T) {
 	type NextEvent struct{}

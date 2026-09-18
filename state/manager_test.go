@@ -21,14 +21,11 @@ func TestManager_BasicOperations(t *testing.T) {
 	t.Run("set and get state", func(t *testing.T) {
 		manager := state.NewManager[string]()
 
-		// Initial state
 		assert.Equal(t, "", manager.Get())
 
-		// Set new state
 		manager.Set("new_state")
 		assert.Equal(t, "new_state", manager.Get())
 
-		// Set another state
 		manager.Set("another_state")
 		assert.Equal(t, "another_state", manager.Get())
 	})
@@ -44,12 +41,10 @@ func TestManager_BasicOperations(t *testing.T) {
 	})
 
 	t.Run("generic types", func(t *testing.T) {
-		// String type
 		stringManager := state.NewManager[string]()
 		stringManager.Set("test")
 		assert.Equal(t, "test", stringManager.Get())
 
-		// Struct type
 		type TestState struct {
 			Value int
 			Name  string
@@ -59,7 +54,6 @@ func TestManager_BasicOperations(t *testing.T) {
 		structManager.Set(s)
 		assert.Equal(t, s, structManager.Get())
 
-		// Pointer type
 		ptrManager := state.NewManager[*int]()
 		value := 42
 		ptrManager.Set(&value)
@@ -78,17 +72,13 @@ func TestManager_TimerExecution(t *testing.T) {
 			executed = true
 		})
 
-		// Verify timer is active
 		assert.Equal(t, 1, manager.ActiveTimerCount())
 
-		// Advance time to trigger timer
 		err := dispatcher.FastForward(time.Unix(0, 0).Add(100 * time.Millisecond))
 		require.NoError(t, err)
 
-		// Timer should have executed
 		assert.True(t, executed, "timer should have executed")
 
-		// Timer should be removed after execution
 		assert.Equal(t, 0, manager.ActiveTimerCount())
 	})
 
@@ -98,7 +88,6 @@ func TestManager_TimerExecution(t *testing.T) {
 
 		var execOrder []int
 
-		// Schedule timers with different delays
 		delays := []time.Duration{30 * time.Millisecond, 10 * time.Millisecond, 20 * time.Millisecond}
 		expected := []int{1, 2, 0} // Order based on delays: 10ms, 20ms, 30ms
 
@@ -108,10 +97,8 @@ func TestManager_TimerExecution(t *testing.T) {
 			})
 		}
 
-		// Verify all timers are active
 		assert.Equal(t, 3, manager.ActiveTimerCount())
 
-		// Advance time to trigger all timers
 		require.NoError(t, dispatcher.FastForward(time.Unix(0, 0).Add(10*time.Millisecond)))
 		assert.Equal(t, expected[:1], execOrder, "timers should execute in order of their delays")
 		assert.Equal(t, 2, manager.ActiveTimerCount())
@@ -135,7 +122,6 @@ func TestManager_StateBasedTimerLifecycle(t *testing.T) {
 
 		var executionLog []string
 
-		// Schedule timers for different times
 		manager.AfterFunc(dispatcher, 30*time.Millisecond, func() {
 			executionLog = append(executionLog, "timer1_in_initial")
 		})
@@ -143,18 +129,15 @@ func TestManager_StateBasedTimerLifecycle(t *testing.T) {
 			executionLog = append(executionLog, "timer2_in_initial")
 		})
 
-		// Execute first timer
 		err := dispatcher.FastForward(time.Unix(0, 0).Add(30 * time.Millisecond))
 		require.NoError(t, err)
 
-		// Change state after first timer but before second
 		manager.Set("changed")
 
 		manager.AfterFunc(dispatcher, 50*time.Millisecond, func() {
 			executionLog = append(executionLog, "timer3_in_changed")
 		})
 
-		// Execute remaining timers
 		err = dispatcher.FastForward(time.Unix(0, 0).Add(80 * time.Millisecond))
 		require.NoError(t, err)
 
@@ -171,7 +154,6 @@ func TestManager_StateBasedTimerLifecycle(t *testing.T) {
 		executed1 := false
 		executed2 := false
 
-		// Schedule multiple timers
 		manager.AfterFunc(dispatcher, 100*time.Millisecond, func() {
 			executed1 = true
 		})
@@ -179,20 +161,15 @@ func TestManager_StateBasedTimerLifecycle(t *testing.T) {
 			executed2 = true
 		})
 
-		// Verify timers are active
 		assert.Equal(t, 2, manager.ActiveTimerCount())
 
-		// Change state before any timer fires
 		manager.Set(42)
 
-		// All timers should be canceled immediately
 		assert.Equal(t, 0, manager.ActiveTimerCount())
 
-		// Advance time past all timers
 		err := dispatcher.FastForward(time.Unix(0, 0).Add(200 * time.Millisecond))
 		require.NoError(t, err)
 
-		// No timers should have executed
 		assert.False(t, executed1, "timer1 should be cancelled by state change")
 		assert.False(t, executed2, "timer2 should be cancelled by state change")
 	})
@@ -209,11 +186,9 @@ func TestManager_EdgeCases(t *testing.T) {
 		})
 		assert.Equal(t, 1, manager.ActiveTimerCount())
 
-		// Advance time by minimal amount
 		err := dispatcher.FastForward(time.Unix(0, 0))
 		require.NoError(t, err)
 
-		// Timer should execute immediately
 		assert.True(t, executed, "zero duration timer should execute immediately")
 		assert.Equal(t, 0, manager.ActiveTimerCount())
 	})
@@ -225,21 +200,17 @@ func TestManager_EdgeCases(t *testing.T) {
 		const numTimers = 1000
 		var executedCount int
 
-		// Schedule many timers
 		for i := 0; i < numTimers; i++ {
 			manager.AfterFunc(dispatcher, 100*time.Millisecond, func() {
 				executedCount++
 			})
 		}
 
-		// Verify all timers are active
 		assert.Equal(t, numTimers, manager.ActiveTimerCount())
 
-		// Advance time to trigger all timers
 		err := dispatcher.FastForward(time.Unix(0, 0).Add(100 * time.Millisecond))
 		require.NoError(t, err)
 
-		// Verify all timers executed
 		assert.Equal(t, numTimers, executedCount, "all timers should have executed")
 		assert.Equal(t, 0, manager.ActiveTimerCount())
 	})
@@ -250,22 +221,18 @@ func TestManager_EdgeCases(t *testing.T) {
 
 		var executedStates []int
 
-		// Schedule timer in initial state
 		manager.AfterFunc(dispatcher, 50*time.Millisecond, func() {
 			executedStates = append(executedStates, manager.Get())
 		})
 
-		// Rapid state changes
 		manager.Set(1)
 		manager.Set(2)
 		manager.Set(3)
 
-		// Schedule timer in final state
 		manager.AfterFunc(dispatcher, 25*time.Millisecond, func() {
 			executedStates = append(executedStates, manager.Get())
 		})
 
-		// Execute all timers
 		err := dispatcher.FastForward(time.Unix(0, 0).Add(100 * time.Millisecond))
 		require.NoError(t, err)
 
@@ -285,7 +252,6 @@ func TestManager_ErrorHandling(t *testing.T) {
 			panic("test panic")
 		})
 
-		// FastForward should return error for panic
 		err := dispatcher.FastForward(time.Unix(0, 0).Add(50 * time.Millisecond))
 		assert.ErrorContains(t, err, "panic: test panic", "error should contain panic message")
 	})
@@ -302,11 +268,9 @@ func TestManager_ErrorHandling(t *testing.T) {
 			executed = true
 		})
 
-		// FastForward should stop at first panic
 		err := dispatcher.FastForward(time.Unix(0, 0).Add(100 * time.Millisecond))
 		require.ErrorContains(t, err, "panic: first panic", "FastForward should return error on panic")
 
-		// Second timer should not have executed due to panic
 		assert.False(t, executed, "subsequent timer should not execute after panic")
 	})
 
@@ -358,16 +322,13 @@ func TestManager_NestedOperationsInCallbacks(t *testing.T) {
 
 		manager.Set("initial")
 
-		// Schedule timer that will change state from within callback
 		manager.AfterFunc(dispatcher, 50*time.Millisecond, func() {
 			manager.Set("changed_by_callback")
 		})
 
-		// Advance time to trigger callback
 		err := dispatcher.FastForward(time.Unix(0, 0).Add(50 * time.Millisecond))
 		require.NoError(t, err)
 
-		// State should be changed by callback
 		assert.Equal(t, "changed_by_callback", manager.Get())
 		assert.Equal(t, 0, manager.ActiveTimerCount())
 	})
@@ -383,7 +344,6 @@ func TestManager_NestedOperationsInCallbacks(t *testing.T) {
 			retrievedValue = manager.Get()
 		})
 
-		// Advance time to trigger callback
 		err := dispatcher.FastForward(time.Unix(0, 0).Add(50 * time.Millisecond))
 		require.NoError(t, err)
 
@@ -410,7 +370,6 @@ func TestManager_NestedOperationsInCallbacks(t *testing.T) {
 			})
 		})
 
-		// Execute first timer
 		err := dispatcher.FastForward(time.Unix(0, 0).Add(50 * time.Millisecond))
 		require.NoError(t, err)
 
@@ -452,7 +411,6 @@ func TestManager_NestedOperationsInCallbacks(t *testing.T) {
 			operations = append(operations, fmt.Sprintf("after_nested_timer:%d", manager.Get()))
 		})
 
-		// Execute first timer
 		err := dispatcher.FastForward(time.Unix(0, 0).Add(50 * time.Millisecond))
 		require.NoError(t, err)
 
@@ -480,7 +438,6 @@ func TestManager_NestedOperationsInCallbacks(t *testing.T) {
 
 		var executed []string
 
-		// Schedule multiple timers
 		manager.AfterFunc(dispatcher, 50*time.Millisecond, func() {
 			executed = append(executed, "timer1")
 			// This state change should cancel timer2

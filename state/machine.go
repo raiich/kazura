@@ -35,9 +35,8 @@ func NewMachine[S State[T], T any](g *graph.Graph[S, reflect.Type], v T, opts ..
 	return m
 }
 
-// Machine represents a finite state machine that manages states of type S.
-// It provides lifecycle management (Launch, Stop), event handling (Trigger),
-// and state inspection (CurrentState).
+// Machine is a finite state machine over states of type S, carrying a value of
+// type T.
 //
 // Trigger and Stop return an error while a transition is in progress (from Entry
 // or an exit action); a timer callback runs between transitions and may call
@@ -46,17 +45,12 @@ func NewMachine[S State[T], T any](g *graph.Graph[S, reflect.Type], v T, opts ..
 // or the dispatcher of a timer callback); the machine can still be stopped
 // afterward.
 //
-// IMPORTANT: Machine is NOT safe for concurrent access from multiple goroutines.
-// To safely access the machine from multiple goroutines, use the Dispatcher.AfterFunc:
+// A Machine must be used from a single goroutine. To reach it from another one,
+// submit the call to the [task.Dispatcher] that serializes the machine's work:
 //
-//	go func() {
-//	    dispatcher.AfterFunc(0, func() {
-//	        // Safe access to machine methods from another goroutine
-//	        machine.Trigger(event)
-//	    })
-//	}()
-//
-// This leverages the Dispatcher's internal synchronization mechanism for safe concurrent access.
+//	dispatcher.InvokeFunc(func() {
+//	    machine.Trigger(event)
+//	})
 type Machine[S State[T], T any] struct {
 	graph  *graph.Graph[S, reflect.Type]
 	value  T
@@ -101,12 +95,9 @@ func (m *Machine[S, T]) Launch() error {
 // chain returns. It returns the first failure: a machine that is not running, a
 // transition in progress, a nil event, an event with no transition, the *Guarded
 // of an exit action (returned as is, not wrapped), or a Command this package did not
-// construct. A failure after the first transition leaves the machine in the state
-// whose Entry returned the failing Command.
-//
-// A *Guarded returned after the first transition blocks an event that an Entry
-// returned, not event itself: the requested transition has happened, and
-// [Machine.CurrentState] reports the state that kept its exit action.
+// construct. A failure of an event the chain returned blocks that event, not
+// event itself, and [Machine.CurrentState] reports the state whose Entry
+// returned the failing Command.
 func (m *Machine[S, T]) Trigger(event Event) error {
 	v := m.manager.Get()
 	switch {

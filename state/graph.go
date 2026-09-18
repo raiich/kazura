@@ -9,12 +9,8 @@ import (
 // Edge is a transition of a state graph, keyed by the event's [reflect.Type].
 type Edge[S any] graph.Edge[S, reflect.Type]
 
-// NewGraph creates a new State Graph for state.Machine.
-// It wraps the generic graph.New with reflect.Type as the event type,
-// which is used for event-based state transitions.
-// The init parameter specifies the initial state, and edges define the valid transitions.
-// Returns an error if the graph structure is invalid (e.g., unreachable states,
-// or an event declared twice from one state as an edge or a wildcard).
+// NewGraph builds the graph of a [Machine] from the initial state and its edges.
+// It returns the errors [graph.New] returns.
 func NewGraph[S any](init S, edges ...Edge[S]) (*graph.Graph[S, reflect.Type], error) {
 	var es []graph.Edge[S, reflect.Type]
 	for _, edge := range edges {
@@ -23,15 +19,13 @@ func NewGraph[S any](init S, edges ...Edge[S]) (*graph.Graph[S, reflect.Type], e
 	return graph.New[S, reflect.Type](init, es...)
 }
 
-// On creates a state transition edge from one state to another, triggered by an event of type E.
-// This is a convenience function for creating graph edges with type-based transitions.
-// The transition is identified by the reflect.Type of E, allowing type-safe event handling.
-// Use nil as the 'from' parameter to create wildcard transitions that work from any state.
+// On creates the edge from one state to another for events of type T. A nil from
+// makes it a wildcard edge, taken from any state.
 //
 // Example:
 //
 //	On[MyState, StartEvent](MenuState{}, GameState{})  // MenuState -> GameState on StartEvent
-//	On[MyState, QuitEvent](nil, MenuState{})           // Any state -> MenuState on QuitEvent
+//	On[MyState, QuitEvent](nil, MenuState{})           // any state -> MenuState on QuitEvent
 func On[S, T any](from, to S) Edge[S] {
 	return Edge[S]{
 		From:  from,

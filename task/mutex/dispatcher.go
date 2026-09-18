@@ -1,7 +1,5 @@
-// Package mutex provides a task dispatcher that executes tasks sequentially
-// using sync.Mutex. Unlike the queue package, tasks are executed in the same
-// goroutine as the caller, providing synchronous execution with mutex-based
-// serialization.
+// Package mutex provides a task dispatcher that serializes tasks with a
+// sync.Mutex instead of a run loop, so it has no goroutine to serve.
 package mutex
 
 import (
@@ -16,7 +14,8 @@ import (
 
 var _ task.Dispatcher = (*Dispatcher)(nil)
 
-// Dispatcher is used to execute Task sequentially in same goroutine of caller, using sync.Mutex.
+// Dispatcher serializes tasks with a sync.Mutex: InvokeFunc runs the function in
+// the caller's goroutine, and AfterFunc runs it in the timer's own goroutine.
 type Dispatcher struct {
 	// errCh receives the panic error when a function panics. Buffered with size 1:
 	// the ended gate ensures at most one panic is ever sent, so the send (done
@@ -33,10 +32,8 @@ func (d *Dispatcher) Err() <-chan error {
 	return d.errCh
 }
 
-// AfterFunc schedules f to execute after the specified duration.
-// Unlike time.AfterFunc which executes in a separate goroutine, this method
-// executes f synchronously in the goroutine that scheduled the timer, protected by sync.Mutex.
-// This ensures sequential execution of all scheduled functions without race conditions.
+// AfterFunc schedules f to execute after the specified duration, serialized by
+// the mutex against the other functions of this dispatcher.
 //
 // See [task.Timer.Stop] for Stop semantics.
 func (d *Dispatcher) AfterFunc(duration time.Duration, f func()) task.Timer {
@@ -84,8 +81,7 @@ func (d *Dispatcher) safeExec(f func()) (result task.Task) {
 	return internal.SucceededTask
 }
 
-// NewDispatcher creates a new Dispatcher that uses sync.Mutex for task serialization.
-// Tasks are executed synchronously in the caller's goroutine.
+// NewDispatcher creates a new Dispatcher.
 func NewDispatcher() *Dispatcher {
 	return &Dispatcher{
 		errCh: make(chan error, 1),

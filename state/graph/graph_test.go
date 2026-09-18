@@ -8,9 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestNewGraph tests various scenarios of graph creation and validation.
 func TestNewGraph(t *testing.T) {
-	// Define event types for testing transitions
 	type (
 		Event0 struct{}
 		Event1 struct{}
@@ -18,7 +16,6 @@ func TestNewGraph(t *testing.T) {
 		Event3 struct{}
 		Event4 struct{}
 	)
-	// Define state types for testing nodes
 	type (
 		State0 struct{}
 		State1 struct{}
@@ -26,7 +23,6 @@ func TestNewGraph(t *testing.T) {
 		State3 struct{}
 	)
 
-	// Test basic graph creation with regular and wildcard transitions
 	t.Run("basic graph", func(t *testing.T) {
 		g, err := NewGraph(
 			State1{},
@@ -49,7 +45,6 @@ func TestNewGraph(t *testing.T) {
 		assert.Equal(t, expected, graph.Dump(g))
 	})
 
-	// Test detection of unreachable states that cannot be reached from initial state
 	t.Run("unreachable states from initial state", func(t *testing.T) {
 		_, err := NewGraph(
 			State0{},
@@ -59,7 +54,6 @@ func TestNewGraph(t *testing.T) {
 		assert.ErrorContains(t, err, "unreachable nodes: [State1 State3]")
 	})
 
-	// Test detection of dangling states that are completely isolated
 	t.Run("unreachable states (dangling)", func(t *testing.T) {
 		type State4 = namerState
 
@@ -72,7 +66,6 @@ func TestNewGraph(t *testing.T) {
 		assert.ErrorContains(t, err, "unreachable nodes: [s4 s4']")
 	})
 
-	// Test error when same transition leads to different states from same node
 	t.Run("duplicate transition with same event to different state", func(t *testing.T) {
 		_, err := NewGraph(
 			State1{},
@@ -82,7 +75,6 @@ func TestNewGraph(t *testing.T) {
 		assert.ErrorContains(t, err, "already exists for node")
 	})
 
-	// Test error when same transition is defined multiple times to same state
 	t.Run("duplicate transition with same event to same state", func(t *testing.T) {
 		_, err := NewGraph(
 			State1{},
@@ -92,7 +84,6 @@ func TestNewGraph(t *testing.T) {
 		assert.ErrorContains(t, err, "already exists for node")
 	})
 
-	// Test error when wildcard transition conflicts with regular transition
 	t.Run("duplicate wildcard transition with same event", func(t *testing.T) {
 		_, err := NewGraph(
 			State1{},
@@ -102,7 +93,6 @@ func TestNewGraph(t *testing.T) {
 		assert.ErrorContains(t, err, "wildcard transition already exists")
 	})
 
-	// Test error when same state type is used with different values
 	t.Run("same state type but not equal", func(t *testing.T) {
 		type (
 			myState1 struct{ x int }
@@ -183,7 +173,6 @@ type Edge = graph.Edge[testState, reflect.Type]
 type Graph = graph.Graph[testState, reflect.Type]
 
 // On creates an edge with the given event type as transition.
-// Uses reflection to get the type of the event for the transition.
 func On[E testEvent](from, to testState) Edge {
 	return Edge{
 		From:  from,

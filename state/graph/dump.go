@@ -21,7 +21,6 @@ func (w wildState) Name() string {
 }
 
 // eventName converts an event to a human-readable name.
-// For reflect.Type, it returns the type name; for others, it uses string formatting.
 func eventName[E Event](event E) string {
 	switch t := any(event).(type) {
 	case reflect.Type:
@@ -35,17 +34,13 @@ func eventName[E Event](event E) string {
 	}
 }
 
-// mermaidDumper implements the dumper interface for Mermaid state diagram format.
+// mermaidDumper renders a graph as a Mermaid state diagram.
 type mermaidDumper[S any, E Event] struct{}
 
-// Dump converts a graph to Mermaid state diagram format.
-// Returns a string that can be rendered as a Mermaid diagram.
 func (d mermaidDumper[S, E]) Dump(init S, edges []Edge[S, E]) string {
-	// Start with Mermaid state diagram header and initial state
 	headers := []string{"stateDiagram-v2"}
 	headers = append(headers, fmt.Sprintf("[*] --> %s", asStringer(init)))
 
-	// Convert all edges to Mermaid format
 	var lines []string
 	for _, edge := range edges {
 		var from fmt.Stringer

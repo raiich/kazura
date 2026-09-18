@@ -1,3 +1,5 @@
+// Package internal holds the [task.Task] and [task.Timer] implementations the
+// dispatchers share.
 package internal
 
 import (

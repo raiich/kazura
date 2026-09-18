@@ -1,4 +1,3 @@
-// Package main provides type aliases and helper functions for the vending machine example.
 package main
 
 import (

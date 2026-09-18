@@ -15,45 +15,11 @@ import (
 	"github.com/raiich/kazura/task/eventloop"
 )
 
-// Verification policy (primary; the other test files point here):
-//
-//	Definition of done:
-//	  1. Transitions do not nest: Machine.Trigger / Stop from Entry, an exit action or Trace
-//	     return ErrInTransition, Entry returns the Command (an event to process or a stop) the
-//	     machine runs after it returns, timer callbacks run between transitions and may
-//	     trigger or stop through AfterFuncMachine or Machine, and Machine.Launch returns
-//	     ErrInCallback from any callback.
-//	  2. A handle of a left visit returns ErrStateLeft and attaches nothing to the machine;
-//	     until then it is still valid inside the visit's exit action.
-//	  3. A *Guarded from OnExit is returned as is (not wrapped), keeps the state, and the same
-//	     OnExit guards the next event.
-//	  4. Leaving cancels the visit's timers and runs OnExit once; Stop runs it with a nil
-//	     event, cannot be blocked, and reports the overridden Guarded in its Transition.
-//	  5. A failure of a Command returned by Entry (a nil event, no transition, Guarded, not
-//	     constructed by the package) is returned by the Launch / Trigger that ran the chain; a failing
-//	     Trigger inside a timer callback returns it there. The Tracer records only
-//	     transitions, launches and stops that happened.
-//	  6. Inherited behavior (lifecycle, transition lookup, wildcards, timer cancellation,
-//	     Tracer call points) is unchanged: examples/vending-machine reproduces
-//	     its testdata/expected.log.txt.
-//	  7. The library does not panic: NewMachine accepts a nil graph, or one without an initial
-//	     node, and Launch returns ErrNilGraph; Stop succeeds after Entry or the exit action panicked.
-//	Falsification condition: a port needs to transition in the middle of Entry and continue
-//	  in the same Entry afterward (Entry returning the event does not hold).
-//	Guaranteed: returned errors (errors.Is / errors.As), CurrentState after a transition, the
-//	  sequence of Transitions the Tracer receives, whether timers fire, callback call counts
-//	  and order.
-//	Not guaranteed: concurrent use from several goroutines (serializing on a Dispatcher is the
-//	  caller's job), a Dispatcher that fires timers reentrantly from a callback, transitions
-//	  and reuse after a callback panicked (only Stop is guaranteed), exhaustive graph
-//	  validation (state/graph; graph_test.go covers what the Machine uses), real-time timer accuracy
-//	  (the synchronous model driven by eventloop's FastForward only).
-//	Not automated: none.
-//	Strength check required: "Stop runs the exit action with a nil event",
-//	  "Launch, Trigger and Stop from inside Entry are refused",
-//	  "Launch, Trigger and Stop from inside the exit action are refused",
-//	  "Machine.Launch from a timer callback returns ErrInCallback",
-//	  "Trigger returns the failure of a chained event" (the failure reaches the caller)
+// Not guaranteed: concurrent use from several goroutines (serializing on a Dispatcher is
+// the caller's job), a Dispatcher that fires timers reentrantly from a callback,
+// transitions and reuse after a callback panicked (only Stop is guaranteed), exhaustive
+// graph validation (state/graph; graph_test.go covers what the Machine uses), real-time
+// timer accuracy (the synchronous model driven by eventloop's FastForward only).
 
 func TestNewMachine(t *testing.T) {
 	t.Run("nil graph is accepted and reported by Launch", func(t *testing.T) {

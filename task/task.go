@@ -1,3 +1,5 @@
+// Package task provides the [Dispatcher] abstraction that serializes function
+// execution, together with the [Task] and [Timer] handles its methods return.
 package task
 
 import (

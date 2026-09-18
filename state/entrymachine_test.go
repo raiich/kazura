@@ -13,23 +13,10 @@ import (
 	"github.com/raiich/kazura/task/eventloop"
 )
 
-// Verification policy (definition of done and falsification condition: state/machine_test.go):
-//
-//	Guaranteed: returned errors (errors.Is / errors.As), CurrentState after a transition,
-//	  whether and in which order timers fire, the number of timers a visit holds, OnExit and
-//	  timer callback call counts.
-//	Not guaranteed: real-time timer accuracy (the synchronous model driven by
-//	  eventloop.Dispatcher's FastForward only), firing order across several Dispatchers, a
-//	  Dispatcher that fires timers reentrantly, the relative order of several timers
-//	  registered at the same time (the Dispatcher's contract).
-//	Not automated: none.
-//	Strength check required:
-//	  "a Guarded keeps the state and guards the following event with the same callback",
-//	  "the timers of the visit are canceled on a transition",
-//	  "the timers of the visit survive a blocked transition and still fire",
-//	  "AfterFunc from inside the exit action survives a blocked transition",
-//	  "OnExit on a left EntryMachine returns ErrStateLeft and the destination gets no guard",
-//	  "AfterFunc on a left EntryMachine returns ErrStateLeft and the destination gets no timer"
+// Not guaranteed: real-time timer accuracy (the synchronous model driven by
+// eventloop.Dispatcher's FastForward only), firing order across several Dispatchers, a
+// Dispatcher that fires timers reentrantly, the relative order of several timers
+// registered at the same time (the Dispatcher's contract).
 
 func TestEntryMachine_OnExit(t *testing.T) {
 	type NextEvent struct{}

@@ -42,8 +42,7 @@ type stopCommand struct{}
 
 func (stopCommand) command() {}
 
-// Event represents an event that can trigger state transitions.
-// Any type can be used as an event by implementing this interface.
+// Event is what triggers a transition. Any type is an Event.
 type Event interface {
 }
 

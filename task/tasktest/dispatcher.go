@@ -1,3 +1,5 @@
+// Package tasktest provides the conformance tests every [task.Dispatcher]
+// implementation is expected to pass.
 package tasktest
 
 import (
@@ -17,7 +19,7 @@ type TestHelper struct {
 	// Start is the initial time of the test dispatcher.
 	Start time.Time
 	// AdvanceToFunc moves time forward to the given absolute time and ensures all tasks up to that point execute.
-	// Returns an error if a dispatched function panicked (for eventloop-style dispatchers).
+	// Returns an error if a dispatched function panicked.
 	AdvanceToFunc func(to time.Time) error
 }
 
