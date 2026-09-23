@@ -46,6 +46,7 @@
 package graph
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -112,10 +113,14 @@ func (g *Graph[S, E]) getEdges() []Edge[S, E] {
 }
 
 // New creates a Graph from the initial state and the edges. It returns an error
-// when an edge has a nil To, when two edges share an event from the same node or
-// as a wildcard, when one node identity carries different state values, or when
-// a node is unreachable from the initial node.
+// when an edge has a nil To, when a state is not comparable, when two edges
+// share an event from the same node or as a wildcard, when one node identity
+// carries different state values, or when a node is unreachable from the
+// initial node.
 func New[S State, E Event](init S, edges ...Edge[S, E]) (*Graph[S, E], error) {
+	if any(init) == nil {
+		return nil, errors.New("initial node is nil")
+	}
 	registry := &nodeRegistry[S, E]{
 		names: make(map[string]*Node[S, E]),
 		types: make(map[reflect.Type]*Node[S, E]),

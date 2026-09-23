@@ -59,9 +59,13 @@ type nodeRegistry[S State, E Event] struct {
 }
 
 // GetOrCreate retrieves an existing node or creates a new one for the given state.
-// It returns an error when a node of the same identity already carries a
-// different state value.
+// It returns an error when the state is not comparable, or when a node of the
+// same identity already carries a different state value.
 func (r *nodeRegistry[S, E]) GetOrCreate(s S) (*Node[S, E], error) {
+	// The value, not the type: an interface field may hold an uncomparable value.
+	if !reflect.ValueOf(s).Comparable() {
+		return nil, fmt.Errorf("uncomparable state %T", s)
+	}
 	node := r.getOrCreate(s)
 	if any(node.State) != any(s) {
 		return nil, fmt.Errorf("node %v already exists as %v", asStringer(s), asStringer(node.State))

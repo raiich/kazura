@@ -45,6 +45,22 @@ func TestNewGraph(t *testing.T) {
 		assert.Equal(t, expected, graph.Dump(g))
 	})
 
+	t.Run("nil initial state", func(t *testing.T) {
+		_, err := NewGraph(nil, On[*Event1](nil, State1{}))
+		assert.ErrorContains(t, err, "initial node is nil")
+	})
+
+	t.Run("uncomparable state", func(t *testing.T) {
+		type sliceState struct{ _ []int }
+		_, err := NewGraph(State0{}, On[*Event1](State0{}, sliceState{}))
+		assert.ErrorContains(t, err, "uncomparable state")
+
+		// Comparable type, uncomparable value.
+		type anyState struct{ v any }
+		_, err = NewGraph(State0{}, On[*Event1](State0{}, anyState{v: []int{}}))
+		assert.ErrorContains(t, err, "uncomparable state")
+	})
+
 	t.Run("unreachable states from initial state", func(t *testing.T) {
 		_, err := NewGraph(
 			State0{},
