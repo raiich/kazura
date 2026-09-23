@@ -40,7 +40,13 @@ Define states and their transitions first. This makes runtime behavior predictab
 
 ```go
 import (
+    "fmt"
+    "log/slog"
+    "time"
+
+    "github.com/raiich/kazura/must"
     "github.com/raiich/kazura/state"
+    "github.com/raiich/kazura/task"
     "github.com/raiich/kazura/task/eventloop"
 )
 
@@ -49,16 +55,22 @@ type State = state.State[*VendingMachine]
 type Event = state.Event
 type EntryMachine = state.EntryMachine[*VendingMachine]
 type AfterFuncMachine = state.AfterFuncMachine[*VendingMachine]
+type Transition = state.Transition[State]
+
+// On creates the edge from one state to another for events of type E
+func On[E Event](from, to State) state.Edge[State] {
+    return state.On[State, E](from, to)
+}
 
 // Define the state graph
-stateGraph := state.NewGraph[State](
+var stateGraph = must.Must(state.NewGraph[State](
     InitialState{},  // Initial state
     On[CoinEvent](InitialState{}, WaitingState{}),      // Coin insertion -> waiting
     On[CoinEvent](WaitingState{}, WaitingState{}),      // Additional coins
     On[DoneEvent](WaitingState{}, InitialState{}),      // Cancel/timeout
     On[*ButtonEvent](WaitingState{}, PouringState{}),   // Button press -> pouring
     On[DoneEvent](PouringState{}, InitialState{}),      // Pouring complete -> initial
-)
+))
 ```
 
 State diagram:
@@ -76,7 +88,7 @@ stateDiagram-v2
 
 Each state defines transition behavior in its `Entry` method.
 
-`Entry` returns what the machine does next: `state.Trigger(event)` to process an event, or `nil` to stay.
+`Entry` returns what the machine does next: `state.Trigger(event)` to process an event, `state.Stop()` to stop the machine, or `nil` to stay.
 
 ```go
 // Initial state: machine is idle
@@ -101,7 +113,7 @@ func (s WaitingState) Entry(machine *EntryMachine, event Event) state.Command {
     }
 
     // Guard conditions: conditionally control state transitions
-    machine.OnExit(func(event Event) *state.Guarded {
+    must.NoError(machine.OnExit(func(event Event) *state.Guarded {
         switch e := event.(type) {
         case *ButtonEvent:
             // Coffee requires 2 coins
@@ -112,12 +124,12 @@ func (s WaitingState) Entry(machine *EntryMachine, event Event) state.Command {
             }
         }
         return nil  // Allow transition
-    })
+    }))
 
     // Timeout handling: automatically return to initial state after 10 seconds
-    machine.AfterFunc(vendingMachine.Dispatcher, 10*time.Second, func(machine *AfterFuncMachine) {
-        machine.Trigger(DoneEvent("timeout"))
-    })
+    must.NoError(machine.AfterFunc(vendingMachine.Dispatcher, 10*time.Second, func(machine *AfterFuncMachine) {
+        must.NoError(machine.Trigger(DoneEvent("timeout")))
+    }))
     return nil
 }
 
@@ -132,7 +144,7 @@ func (s PouringState) Entry(machine *EntryMachine, event Event) state.Command {
 }
 ```
 
-### 3. Events and State Data Definition
+### 3. Events, State Data and Tracer Definition
 
 ```go
 // Event type definitions
@@ -145,7 +157,14 @@ type DoneEvent string     // Completion/cancellation event
 // State data
 type VendingMachine struct {
     Coins      int
-    Dispatcher Dispatcher
+    Dispatcher task.Dispatcher
+}
+
+// transitionLogger logs every state transition via state.WithTracer
+type transitionLogger struct{}
+
+func (transitionLogger) Trace(t Transition) {
+    slog.Info("transition", "from", fmt.Sprintf("%T", t.From), "to", fmt.Sprintf("%T", t.To), "event", t.Event)
 }
 ```
 
@@ -154,31 +173,34 @@ type VendingMachine struct {
 ```go
 func main() {
     // Create event loop dispatcher
-    dispatcher := eventloop.NewDispatcher(time.Now())
+    baseTime := time.Now()
+    dispatcher := eventloop.NewDispatcher(baseTime)
 
     // Create and launch state machine
     vendingMachine := &VendingMachine{
         Dispatcher: dispatcher,
     }
-    machine := state.NewMachine(stateGraph, vendingMachine)
-    machine.Launch()
+    machine := state.NewMachine(stateGraph, vendingMachine, state.WithTracer[State](transitionLogger{}))
+    must.NoError(machine.Launch())
 
     // Scenario 1: Buy water (1 coin required)
-    machine.Trigger(CoinEvent(1))
-    machine.Trigger(&ButtonEvent{Item: "water"})
+    must.NoError(machine.Trigger(CoinEvent(1)))
+    must.NoError(machine.Trigger(&ButtonEvent{Item: "water"}))
 
     // Scenario 2: Buy coffee (2 coins required)
-    machine.Trigger(CoinEvent(1))
-    machine.Trigger(CoinEvent(2))  // Additional coin
-    machine.Trigger(&ButtonEvent{Item: "coffee"})
+    must.NoError(machine.Trigger(CoinEvent(1)))
+    must.NoError(machine.Trigger(CoinEvent(2)))  // Additional coin
+    must.NoError(machine.Trigger(&ButtonEvent{Item: "coffee"}))
 
-    // Scenario 3: Insufficient coins for coffee (rejected by guard condition)
-    machine.Trigger(CoinEvent(1))
-    err := machine.Trigger(&ButtonEvent{Item: "coffee"})  // Returns error
+    // Scenario 3: Insufficient coins for coffee (rejected by guard condition), then cancel
+    must.NoError(machine.Trigger(CoinEvent(1)))
+    err := machine.Trigger(&ButtonEvent{Item: "coffee"})  // Returns the *state.Guarded
+    slog.Info("insufficient coins", "error", err)
+    must.NoError(machine.Trigger(DoneEvent("cancel")))
 
     // Scenario 4: Timeout test (using virtual time)
-    machine.Trigger(CoinEvent(1))
-    dispatcher.FastForward(time.Now().Add(10 * time.Second))  // Simulate 10 seconds
+    must.NoError(machine.Trigger(CoinEvent(1)))
+    must.NoError(dispatcher.FastForward(baseTime.Add(10 * time.Second)))  // Simulate 10 seconds
 }
 ```
 
@@ -200,12 +222,12 @@ See the code example at [examples/vending-machine](examples/vending-machine/main
 ## Packages
 
 - **`state/`** - State machines that unify transitions and timeout handling, eliminating timing issues
-- **`task/`** - Dispatchers that serialize async tasks (queue, mutex, eventloop) to prevent race conditions
+- **`task/`** - Dispatchers that serialize async tasks (queue, mutex, eventloop; pausable wraps one to pause its timers) to prevent race conditions
 - **`must/`** - Panic-based utilities that distinguish programming bugs from recoverable errors
 
 ## Documentation
 
-TODO
+<!-- TODO -->
 
 - [Best Practices](docs/state-machine-best-practices.md)
 

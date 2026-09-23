@@ -2,7 +2,9 @@
 
 Entry runs inside a transition and cannot start another one, so it returns the
 next event through state.Trigger and the machine processes it after Entry
-returns. The loop ends when an Entry returns nil.
+returns. The loop ends when an Entry returns nil or Stop, or at the first
+failure of what it returned; Launch and Trigger return that failure as
+Machine.Trigger documents.
 
 ```mermaid
 sequenceDiagram

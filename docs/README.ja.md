@@ -40,7 +40,13 @@ kazura を使って自動販売機のステートマシンを構築してみま�
 
 ```go
 import (
+    "fmt"
+    "log/slog"
+    "time"
+
+    "github.com/raiich/kazura/must"
     "github.com/raiich/kazura/state"
+    "github.com/raiich/kazura/task"
     "github.com/raiich/kazura/task/eventloop"
 )
 
@@ -49,16 +55,22 @@ type State = state.State[*VendingMachine]
 type Event = state.Event
 type EntryMachine = state.EntryMachine[*VendingMachine]
 type AfterFuncMachine = state.AfterFuncMachine[*VendingMachine]
+type Transition = state.Transition[State]
+
+// On は型 E のイベントによる状態間の遷移を作る
+func On[E Event](from, to State) state.Edge[State] {
+    return state.On[State, E](from, to)
+}
 
 // 状態グラフを定義
-stateGraph := state.NewGraph[State](
+var stateGraph = must.Must(state.NewGraph[State](
     InitialState{},  // 初期状態
     On[CoinEvent](InitialState{}, WaitingState{}),      // コイン投入 -> 待機
     On[CoinEvent](WaitingState{}, WaitingState{}),      // 追加コイン
     On[DoneEvent](WaitingState{}, InitialState{}),      // キャンセル/タイムアウト
     On[*ButtonEvent](WaitingState{}, PouringState{}),   // ボタン押下 -> 注ぎ中
     On[DoneEvent](PouringState{}, InitialState{}),      // 注ぎ完了 -> 初期状態
-)
+))
 ```
 
 状態図：
@@ -76,7 +88,7 @@ stateDiagram-v2
 
 各状態は `Entry` メソッドで遷移時の動作を定義します。
 
-`Entry` は次の動作を返します。`state.Trigger(event)` ならそのイベントを処理し、`nil` なら現在の状態に留まります。
+`Entry` は次の動作を返します。`state.Trigger(event)` ならそのイベントを処理し、`state.Stop()` ならマシンを停止し、`nil` なら現在の状態に留まります。
 
 ```go
 // 初期状態：マシンはアイドル状態
@@ -101,7 +113,7 @@ func (s WaitingState) Entry(machine *EntryMachine, event Event) state.Command {
     }
 
     // ガード条件：状態遷移を条件付きで制御
-    machine.OnExit(func(event Event) *state.Guarded {
+    must.NoError(machine.OnExit(func(event Event) *state.Guarded {
         switch e := event.(type) {
         case *ButtonEvent:
             // コーヒーは2コイン必要
@@ -112,12 +124,12 @@ func (s WaitingState) Entry(machine *EntryMachine, event Event) state.Command {
             }
         }
         return nil  // 遷移を許可
-    })
+    }))
 
     // タイムアウト処理：10秒後に自動的に初期状態へ戻る
-    machine.AfterFunc(vendingMachine.Dispatcher, 10*time.Second, func(machine *AfterFuncMachine) {
-        machine.Trigger(DoneEvent("timeout"))
-    })
+    must.NoError(machine.AfterFunc(vendingMachine.Dispatcher, 10*time.Second, func(machine *AfterFuncMachine) {
+        must.NoError(machine.Trigger(DoneEvent("timeout")))
+    }))
     return nil
 }
 
@@ -132,7 +144,7 @@ func (s PouringState) Entry(machine *EntryMachine, event Event) state.Command {
 }
 ```
 
-### 3. イベントと状態データの定義
+### 3. イベント・状態データ・トレーサーの定義
 
 ```go
 // イベント型の定義
@@ -145,7 +157,14 @@ type DoneEvent string     // 完了/キャンセルイベント
 // 状態データ
 type VendingMachine struct {
     Coins      int
-    Dispatcher Dispatcher
+    Dispatcher task.Dispatcher
+}
+
+// transitionLogger は state.WithTracer 経由で全ての状態遷移をログに出す
+type transitionLogger struct{}
+
+func (transitionLogger) Trace(t Transition) {
+    slog.Info("transition", "from", fmt.Sprintf("%T", t.From), "to", fmt.Sprintf("%T", t.To), "event", t.Event)
 }
 ```
 
@@ -154,31 +173,34 @@ type VendingMachine struct {
 ```go
 func main() {
     // イベントループの Dispatcher を作成
-    dispatcher := eventloop.NewDispatcher(time.Now())
+    baseTime := time.Now()
+    dispatcher := eventloop.NewDispatcher(baseTime)
 
     // ステートマシンを作成して起動
     vendingMachine := &VendingMachine{
         Dispatcher: dispatcher,
     }
-    machine := state.NewMachine(stateGraph, vendingMachine)
-    machine.Launch()
+    machine := state.NewMachine(stateGraph, vendingMachine, state.WithTracer[State](transitionLogger{}))
+    must.NoError(machine.Launch())
 
     // シナリオ1：水を購入（1コイン必要）
-    machine.Trigger(CoinEvent(1))
-    machine.Trigger(&ButtonEvent{Item: "water"})
+    must.NoError(machine.Trigger(CoinEvent(1)))
+    must.NoError(machine.Trigger(&ButtonEvent{Item: "water"}))
 
     // シナリオ2：コーヒーを購入（2コイン必要）
-    machine.Trigger(CoinEvent(1))
-    machine.Trigger(CoinEvent(2))  // 追加コイン
-    machine.Trigger(&ButtonEvent{Item: "coffee"})
+    must.NoError(machine.Trigger(CoinEvent(1)))
+    must.NoError(machine.Trigger(CoinEvent(2)))  // 追加コイン
+    must.NoError(machine.Trigger(&ButtonEvent{Item: "coffee"}))
 
-    // シナリオ3：コーヒーのコイン不足（ガード条件で拒否）
-    machine.Trigger(CoinEvent(1))
-    err := machine.Trigger(&ButtonEvent{Item: "coffee"})  // エラーを返す
+    // シナリオ3：コーヒーのコイン不足（ガード条件で拒否）、その後キャンセル
+    must.NoError(machine.Trigger(CoinEvent(1)))
+    err := machine.Trigger(&ButtonEvent{Item: "coffee"})  // *state.Guarded を返す
+    slog.Info("insufficient coins", "error", err)
+    must.NoError(machine.Trigger(DoneEvent("cancel")))
 
     // シナリオ4：タイムアウトテスト（仮想時間を使用）
-    machine.Trigger(CoinEvent(1))
-    dispatcher.FastForward(time.Now().Add(10 * time.Second))  // 10秒をシミュレート
+    must.NoError(machine.Trigger(CoinEvent(1)))
+    must.NoError(dispatcher.FastForward(baseTime.Add(10 * time.Second)))  // 10秒をシミュレート
 }
 ```
 
@@ -200,12 +222,12 @@ func main() {
 ## パッケージ
 
 - **`state/`** - 状態遷移とタイムアウト処理を統一し、タイミング問題を排除するステートマシン
-- **`task/`** - 非同期タスクを直列化する Dispatcher（queue、mutex、eventloop）で競合状態を防止
+- **`task/`** - 非同期タスクを直列化する Dispatcher（queue、mutex、eventloop。pausable はそれらを包んでタイマーを一時停止）で競合状態を防止
 - **`must/`** - プログラミングバグと回復可能なエラーを区別するパニックベースのユーティリティ
 
 ## ドキュメント
 
-TODO
+<!-- TODO -->
 
 - [Best Practices](state-machine-best-practices.md)
 

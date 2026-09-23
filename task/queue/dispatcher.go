@@ -24,6 +24,10 @@ var ErrServed = errors.New("queue: Serve already called")
 // The dispatcher has no Stop method: cancel the context passed to Serve to stop
 // it. Serve also self-stops when a task panics, after which submissions settle as
 // [task.ErrCanceled] without the context being canceled.
+//
+// InvokeFunc from a task blocks while the queue is full, and Wait from a task
+// blocks until its ctx is done; a task schedules follow-up work with
+// AfterFunc(0, f).
 type Dispatcher struct {
 	queue  chan *pendingTask
 	closed chan struct{}

@@ -14,8 +14,8 @@ type Dispatcher interface {
 	//
 	// Synchronization: all scheduled functions are executed serially.
 	// No additional synchronization is needed within callbacks, and shared
-	// variable access is safe across callbacks. Functions with different delays
-	// execute in delay order; for equal delays the order is unspecified.
+	// variable access is safe across callbacks. Functions run in the order their
+	// delays elapse; delays the dispatcher cannot tell apart run in unspecified order.
 	//
 	// Panic handling: if f panics, the panic is caught and all remaining
 	// scheduled functions are not executed. How the panic value is
@@ -35,6 +35,6 @@ type Dispatcher interface {
 	// stopped first, or a re-raised panic — see [Task.Wait].
 	//
 	// An implementation may run f synchronously in the caller's goroutine, so
-	// calling InvokeFunc or AfterFunc from within a dispatched function may deadlock.
+	// calling InvokeFunc from within a dispatched function may deadlock.
 	InvokeFunc(f func()) Task
 }

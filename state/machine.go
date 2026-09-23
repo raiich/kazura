@@ -45,8 +45,8 @@ func NewMachine[S State[T], T any](g *graph.Graph[S, reflect.Type], v T, opts ..
 // or the dispatcher of a timer callback); the machine can still be stopped
 // afterward.
 //
-// A Machine must be used from a single goroutine. To reach it from another one,
-// submit the call to the [task.Dispatcher] that serializes the machine's work:
+// A Machine is not safe for concurrent use. Calls from other goroutines go
+// through the [task.Dispatcher] that runs its timers, serialized with them:
 //
 //	dispatcher.InvokeFunc(func() {
 //	    machine.Trigger(event)

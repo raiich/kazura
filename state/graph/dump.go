@@ -38,6 +38,8 @@ func eventName[E Event](event E) string {
 type mermaidDumper[S any, E Event] struct{}
 
 func (d mermaidDumper[S, E]) Dump(init S, edges []Edge[S, E]) string {
+	// Labels drop the package and the pointer and are not escaped, so distinct
+	// nodes or events can share a label and some names break the diagram.
 	headers := []string{"stateDiagram-v2"}
 	headers = append(headers, fmt.Sprintf("[*] --> %s", asStringer(init)))
 

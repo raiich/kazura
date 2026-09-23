@@ -14,7 +14,7 @@ it organizes complex state logic and achieves highly maintainable code.
 - **Explicit State Transitions**: Defining state transitions as a graph structure enables visualization of system behavior
 - **Type Safety**: Leverages Go generics for compile-time type checking
 - **Testability**: Dispatcher abstraction makes time-dependent processing testable
-- **Concurrency**: Dispatcher's synchronization guarantees ensure safety in multi-threaded environments
+- **Concurrency**: A Dispatcher serializes the machine's timers with calls from other goroutines
 
 ## Basic Usage
 
@@ -237,8 +237,8 @@ func (s WaitingState) Entry(machine *EntryMachine, event Event) state.Command {
 
 **Features**:
 - The timer belongs to the visit; cancellation and what the callback may call are the docs of `EntryMachine.AfterFunc` and `AfterFuncMachine`
-- Synchronization is guaranteed via `Dispatcher` (safe for concurrent processing)
-- In tests, you can advance time with `Dispatcher.FastForward()`
+- The callback runs on the `Dispatcher`, serialized with everything else submitted to it
+- In tests, you can advance time with `eventloop.Dispatcher.FastForward()`
 
 ### Immediate Post-Processing with the Entry Return Value
 
@@ -281,15 +281,22 @@ Choose a Dispatcher based on your state machine use case.
 dispatcher := eventloop.NewDispatcher(time.Now())
 must.NoError(dispatcher.FastForward(time.Now())) // Call every frame
 
-// For real-time concurrent processing
+// For real-time processing
 dispatcher := mutex.NewDispatcher()
 // or
-dispatcher := queue.NewDispatcher(ctx)
+dispatcher := queue.NewDispatcher()
+go dispatcher.Serve(ctx)
+
+// To suspend the pending timers (e.g. while a game is paused)
+dispatcher := pausable.NewDispatcher(mutex.NewDispatcher(), time.Now)
+must.NoError(dispatcher.Pause())
+must.NoError(dispatcher.Resume())
 ```
 
 **Selection Criteria**:
 - **eventloop**: When you have a periodic update loop (like games) and want manual time control (advance time with `FastForward()`). Also useful for tests.
-- **mutex/queue**: For real-time concurrent processing
+- **mutex/queue**: For real-time processing
+- **pausable**: Wraps another dispatcher to suspend and resume its pending timers
 
 **Dispatcher Feature Comparison**:
 
@@ -297,7 +304,20 @@ dispatcher := queue.NewDispatcher(ctx)
 |------------|-------------------------|-------------------------------|--------------------------|
 | eventloop  | Manual (FastForward)    | Caller goroutine              | Game loops, tests        |
 | queue      | Real-time (time.AfterFunc) | Separate goroutine (Serve) | Web servers, workers     |
-| mutex      | Real-time (time.AfterFunc) | Caller goroutine (sync)    | Simple concurrent processing |
+| mutex      | Real-time (time.AfterFunc) | InvokeFunc: caller goroutine; timers: timer goroutine | Simple servers |
+| pausable   | The base's, plus Pause / Resume | That of the base dispatcher | Games with a pause screen |
+
+### Calling the Machine from Other Goroutines
+
+Calls from other goroutines go through the `Dispatcher` that runs the machine's timers:
+
+```go
+dispatcher.InvokeFunc(func() {
+    must.NoError(machine.Trigger(event))
+})
+```
+
+Inside a callback (`Entry`, an exit action or a timer callback) do not call `InvokeFunc` or `Task.Wait`; either may deadlock, depending on the dispatcher. To act on the machine after the callback, use `machine.AfterFunc(dispatcher, 0, ...)`.
 
 ## Guard Conditions
 
@@ -530,7 +550,7 @@ stateDiagram-v2
 - Timeout: Auto-reset after 10 seconds of inactivity (DoneEvent)
 - Self-transition: Additional coins in WaitingState (CoinEvent)
 
-### Example 2: Game (the-way)
+### Example 2: Game
 
 **Scene State Machine**:
 
@@ -556,7 +576,7 @@ stateDiagram-v2
 **Features**:
 - Nested state machines: 2-layer structure of Scene and Character
 - Auto-transition: Automatic transition from Result to Title after time elapsed
-- Game loop: Call `Dispatcher.FastForward()` every frame
+- Game loop: Call `eventloop.Dispatcher.FastForward()` every frame
 
 ## Hints
 
@@ -568,7 +588,7 @@ stateDiagram-v2
 4. **Clarify Responsibilities**: Separate data roles and define state machine scope
 5. **Utilize Nested Structures**: Build complex systems through hierarchies
 6. **Validate with Guard Conditions**: Prevent invalid state transitions
-7. **Use Timers via Dispatcher**: Ensure concurrency safety
+7. **Use Timers via Dispatcher**: Keep timer callbacks serialized with other calls
 
 ### Common Mistakes
 
@@ -577,6 +597,7 @@ stateDiagram-v2
 3. **Forgetting OnExit Registration**: Don't forget to register guard conditions in `Entry`
 4. **Missing State Transition Graph Definitions**: Explicitly define all transitions
 5. **State Explosion**: Consider hierarchies when there are too many states
+6. **InvokeFunc or Task.Wait from a callback**: Use `machine.AfterFunc(dispatcher, 0, ...)` instead
 
 ### When to Use State Machines
 
