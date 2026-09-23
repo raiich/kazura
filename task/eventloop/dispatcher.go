@@ -3,16 +3,23 @@
 package eventloop
 
 import (
+	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/raiich/kazura/task"
 	"github.com/raiich/kazura/task/internal"
 )
 
+// ErrRunning reports a [Dispatcher.FastForward] while one runs.
+var ErrRunning = errors.New("eventloop: FastForward is already running")
+
 // Dispatcher runs the functions submitted to it only while
 // [Dispatcher.FastForward] advances its simulated time.
 type Dispatcher struct {
+	running atomic.Bool
+
 	mu  sync.Mutex
 	now time.Time
 
@@ -25,9 +32,12 @@ type Dispatcher struct {
 // that are scheduled to run during this time period. Useful for game loops
 // and controlled time progression scenarios.
 //
-// NOTE: This method is intended to be called from a single goroutine only.
-// Concurrent calls from multiple goroutines may lead to race conditions.
+// A FastForward while one runs returns [ErrRunning].
 func (d *Dispatcher) FastForward(to time.Time) error {
+	if !d.running.CompareAndSwap(false, true) {
+		return ErrRunning
+	}
+	defer d.running.Store(false)
 	for {
 		head, ok := d.proceedAndDequeue(to)
 		if !ok {
@@ -102,7 +112,8 @@ func (d *Dispatcher) AfterFunc(duration time.Duration, f func()) task.Timer {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	at := d.now.Add(duration)
+	// Not before now, which dequeue would rewind the clock to.
+	at := d.now.Add(max(duration, 0))
 	t := internal.NewPendingTask(f)
 	d.enqueue(at, t)
 	return &taskTimer{

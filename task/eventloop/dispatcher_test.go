@@ -40,6 +40,39 @@ func TestDispatcher_FastForward(t *testing.T) {
 		assert.True(t, executed)
 	})
 
+	t.Run("nested call returns ErrRunning", func(t *testing.T) {
+		startTime := timeNow()
+		dispatcher := NewDispatcher(startTime)
+
+		var nested error
+		ran := false
+		dispatcher.AfterFunc(0, func() { nested = dispatcher.FastForward(startTime.Add(time.Second)) })
+		dispatcher.AfterFunc(time.Second, func() { ran = true })
+
+		require.NoError(t, dispatcher.FastForward(startTime))
+		assert.ErrorIs(t, nested, ErrRunning)
+		assert.False(t, ran, "the nested call must not run the later task")
+	})
+
+	t.Run("concurrent call returns ErrRunning", func(t *testing.T) {
+		startTime := timeNow()
+		dispatcher := NewDispatcher(startTime)
+
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		dispatcher.AfterFunc(0, func() {
+			close(entered)
+			<-release
+		})
+
+		done := make(chan error, 1)
+		go func() { done <- dispatcher.FastForward(startTime) }()
+		<-entered
+		assert.ErrorIs(t, dispatcher.FastForward(startTime), ErrRunning)
+		close(release)
+		require.NoError(t, <-done)
+	})
+
 	t.Run("partial advance", func(t *testing.T) {
 		startTime := timeNow()
 		dispatcher := NewDispatcher(startTime)
@@ -54,6 +87,26 @@ func TestDispatcher_FastForward(t *testing.T) {
 		assert.True(t, f1, "f1 at 100ms should execute before 150ms")
 		assert.False(t, f2, "f2 at 200ms should not execute at 150ms")
 		assert.False(t, f3, "f3 at 300ms should not execute at 150ms")
+	})
+}
+
+func TestDispatcher_AfterFunc(t *testing.T) {
+	t.Run("negative delay is scheduled as zero", func(t *testing.T) {
+		startTime := timeNow()
+		dispatcher := NewDispatcher(startTime)
+
+		var order []string
+		dispatcher.AfterFunc(0, func() { order = append(order, "zero") })
+		dispatcher.AfterFunc(-time.Hour, func() {
+			order = append(order, "negative")
+			// A rewound clock would run this in the first FastForward.
+			dispatcher.AfterFunc(time.Second, func() { order = append(order, "inner") })
+		})
+
+		require.NoError(t, dispatcher.FastForward(startTime))
+		assert.ElementsMatch(t, []string{"zero", "negative"}, order)
+		require.NoError(t, dispatcher.FastForward(startTime.Add(time.Second)))
+		assert.Equal(t, "inner", order[len(order)-1])
 	})
 }
 
