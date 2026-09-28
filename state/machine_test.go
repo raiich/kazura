@@ -12,14 +12,14 @@ import (
 
 	"github.com/raiich/kazura/state"
 	"github.com/raiich/kazura/state/graph"
-	"github.com/raiich/kazura/task/eventloop"
+	"github.com/raiich/kazura/task/virtualtime"
 )
 
 // Not guaranteed: concurrent use from several goroutines (serializing on a Dispatcher is
 // the caller's job), a Dispatcher that fires timers reentrantly from a callback,
 // transitions and reuse after a callback panicked (only Stop is guaranteed), exhaustive
 // graph validation (state/graph; graph_test.go covers what the Machine uses), real-time
-// timer accuracy (the synchronous model driven by eventloop's FastForward only).
+// timer accuracy (the synchronous model driven by virtualtime's FastForward only).
 
 func TestNewMachine(t *testing.T) {
 	t.Run("nil graph is accepted and reported by Launch", func(t *testing.T) {
@@ -369,7 +369,7 @@ func TestMachine_Trigger(t *testing.T) {
 	})
 
 	t.Run("Machine.Trigger from a timer callback performs the transition", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		var machine *state.Machine[State, *TestValue]
 		var triggerErr error
 		next := &TestState{name: "next"}
@@ -396,7 +396,7 @@ func TestMachine_Trigger(t *testing.T) {
 	})
 
 	t.Run("Machine.Launch from a timer callback returns ErrInCallback", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		var machine *state.Machine[State, *TestValue]
 		var stopErr, launchErr error
 		initial := &TestState{
@@ -519,7 +519,7 @@ func TestMachine_Stop(t *testing.T) {
 	})
 
 	t.Run("Stop cancels the timers of the current visit", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		timerFired := false
 		initial := &TestState{
 			name: "initial",
@@ -598,7 +598,7 @@ func TestMachine_Stop(t *testing.T) {
 
 	t.Run("Stop succeeds after the exit action panicked and does not rerun it", func(t *testing.T) {
 		type NextEvent struct{}
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		exitCount := 0
 		fired := false
 		next := &TestState{name: "next"}
@@ -878,7 +878,7 @@ func TestMachine_Chain(t *testing.T) {
 	})
 
 	t.Run("a returned Stop cancels the timers of the visit", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		initial := &TestState{
 			name: "initial",
 			entry: func(m *EntryMachine, _ Event) state.Command {
@@ -899,7 +899,7 @@ func TestMachine_Chain(t *testing.T) {
 	})
 
 	t.Run("the handle is valid inside the exit action of a returned Stop and its timer is canceled", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		var errs []error
 		initial := &TestState{
 			name: "initial",

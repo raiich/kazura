@@ -1,6 +1,7 @@
-// Package eventloop provides a controllable time-based event dispatcher.
+// Package virtualtime provides a Dispatcher that runs its functions on a
+// simulated clock, which advances only through [Dispatcher.FastForward].
 // It enables precise timing control for applications like game loops and testing.
-package eventloop
+package virtualtime
 
 import (
 	"errors"
@@ -14,7 +15,7 @@ import (
 )
 
 // ErrRunning reports a [Dispatcher.FastForward] while one runs.
-var ErrRunning = errors.New("eventloop: FastForward is already running")
+var ErrRunning = errors.New("virtualtime: FastForward is already running")
 
 // Dispatcher runs the functions submitted to it only while
 // [Dispatcher.FastForward] advances its simulated time.

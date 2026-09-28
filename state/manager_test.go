@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/raiich/kazura/state"
-	"github.com/raiich/kazura/task/eventloop"
+	"github.com/raiich/kazura/task/virtualtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -64,7 +64,7 @@ func TestManager_BasicOperations(t *testing.T) {
 
 func TestManager_TimerExecution(t *testing.T) {
 	t.Run("timer executes normally", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(time.Unix(0, 0))
+		dispatcher := virtualtime.NewDispatcher(time.Unix(0, 0))
 		manager := state.NewManager[int]()
 
 		executed := false
@@ -83,7 +83,7 @@ func TestManager_TimerExecution(t *testing.T) {
 	})
 
 	t.Run("multiple timers execute in order", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(time.Unix(0, 0))
+		dispatcher := virtualtime.NewDispatcher(time.Unix(0, 0))
 		manager := state.NewManager[int]()
 
 		var execOrder []int
@@ -115,7 +115,7 @@ func TestManager_TimerExecution(t *testing.T) {
 
 func TestManager_StateBasedTimerLifecycle(t *testing.T) {
 	t.Run("timers execute during stable state periods", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(time.Unix(0, 0))
+		dispatcher := virtualtime.NewDispatcher(time.Unix(0, 0))
 		manager := state.NewManager[string]()
 
 		manager.Set("initial")
@@ -148,7 +148,7 @@ func TestManager_StateBasedTimerLifecycle(t *testing.T) {
 	})
 
 	t.Run("state change cancels all pending timers", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(time.Unix(0, 0))
+		dispatcher := virtualtime.NewDispatcher(time.Unix(0, 0))
 		manager := state.NewManager[int]()
 
 		executed1 := false
@@ -177,7 +177,7 @@ func TestManager_StateBasedTimerLifecycle(t *testing.T) {
 
 func TestManager_EdgeCases(t *testing.T) {
 	t.Run("zero duration timer", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(time.Unix(0, 0))
+		dispatcher := virtualtime.NewDispatcher(time.Unix(0, 0))
 		manager := state.NewManager[int]()
 
 		executed := false
@@ -194,7 +194,7 @@ func TestManager_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("large number of timers", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(time.Unix(0, 0))
+		dispatcher := virtualtime.NewDispatcher(time.Unix(0, 0))
 		manager := state.NewManager[int]()
 
 		const numTimers = 1000
@@ -216,7 +216,7 @@ func TestManager_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("rapid state transitions", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(time.Unix(0, 0))
+		dispatcher := virtualtime.NewDispatcher(time.Unix(0, 0))
 		manager := state.NewManager[int]()
 
 		var executedStates []int
@@ -245,7 +245,7 @@ func TestManager_EdgeCases(t *testing.T) {
 
 func TestManager_ErrorHandling(t *testing.T) {
 	t.Run("panic in timer callback", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(time.Unix(0, 0))
+		dispatcher := virtualtime.NewDispatcher(time.Unix(0, 0))
 		manager := state.NewManager[int]()
 
 		manager.AfterFunc(dispatcher, 50*time.Millisecond, func() {
@@ -257,7 +257,7 @@ func TestManager_ErrorHandling(t *testing.T) {
 	})
 
 	t.Run("panic stops subsequent timer execution", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(time.Unix(0, 0))
+		dispatcher := virtualtime.NewDispatcher(time.Unix(0, 0))
 		manager := state.NewManager[int]()
 
 		executed := false
@@ -287,7 +287,7 @@ func TestManager_ErrorHandling(t *testing.T) {
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
-				dispatcher := eventloop.NewDispatcher(time.Unix(0, 0))
+				dispatcher := virtualtime.NewDispatcher(time.Unix(0, 0))
 				manager := state.NewManager[int]()
 
 				manager.AfterFunc(dispatcher, 50*time.Millisecond, func() {
@@ -302,7 +302,7 @@ func TestManager_ErrorHandling(t *testing.T) {
 	})
 
 	t.Run("panic with nil", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(time.Unix(0, 0))
+		dispatcher := virtualtime.NewDispatcher(time.Unix(0, 0))
 		manager := state.NewManager[int]()
 
 		manager.AfterFunc(dispatcher, 50*time.Millisecond, func() {
@@ -317,7 +317,7 @@ func TestManager_ErrorHandling(t *testing.T) {
 
 func TestManager_NestedOperationsInCallbacks(t *testing.T) {
 	t.Run("manager.Set inside AfterFunc callback", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(time.Unix(0, 0))
+		dispatcher := virtualtime.NewDispatcher(time.Unix(0, 0))
 		manager := state.NewManager[string]()
 
 		manager.Set("initial")
@@ -334,7 +334,7 @@ func TestManager_NestedOperationsInCallbacks(t *testing.T) {
 	})
 
 	t.Run("manager.Get inside AfterFunc callback", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(time.Unix(0, 0))
+		dispatcher := virtualtime.NewDispatcher(time.Unix(0, 0))
 		manager := state.NewManager[int]()
 
 		manager.Set(42)
@@ -353,7 +353,7 @@ func TestManager_NestedOperationsInCallbacks(t *testing.T) {
 	})
 
 	t.Run("manager.AfterFunc inside AfterFunc callback", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(time.Unix(0, 0))
+		dispatcher := virtualtime.NewDispatcher(time.Unix(0, 0))
 		manager := state.NewManager[string]()
 
 		manager.Set("initial")
@@ -387,7 +387,7 @@ func TestManager_NestedOperationsInCallbacks(t *testing.T) {
 	})
 
 	t.Run("complex nested operations", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(time.Unix(0, 0))
+		dispatcher := virtualtime.NewDispatcher(time.Unix(0, 0))
 		manager := state.NewManager[int]()
 
 		manager.Set(1)
@@ -431,7 +431,7 @@ func TestManager_NestedOperationsInCallbacks(t *testing.T) {
 	})
 
 	t.Run("state change in callback cancels other pending timers", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(time.Unix(0, 0))
+		dispatcher := virtualtime.NewDispatcher(time.Unix(0, 0))
 		manager := state.NewManager[string]()
 
 		manager.Set("initial")
@@ -464,7 +464,7 @@ func TestManager_NestedOperationsInCallbacks(t *testing.T) {
 }
 
 func TestManager_MultipleGoroutines(t *testing.T) {
-	dispatcher := eventloop.NewDispatcher(time.Unix(0, 0))
+	dispatcher := virtualtime.NewDispatcher(time.Unix(0, 0))
 	manager := state.NewManager[int]()
 	var wg sync.WaitGroup
 

@@ -10,11 +10,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/raiich/kazura/state"
-	"github.com/raiich/kazura/task/eventloop"
+	"github.com/raiich/kazura/task/virtualtime"
 )
 
 // Not guaranteed: real-time timer accuracy (the synchronous model driven by
-// eventloop.Dispatcher's FastForward only), firing order across several Dispatchers, a
+// virtualtime.Dispatcher's FastForward only), firing order across several Dispatchers, a
 // Dispatcher that fires timers reentrantly, the relative order of several timers
 // registered at the same time (the Dispatcher's contract).
 
@@ -330,7 +330,7 @@ func TestEntryMachine_AfterFunc(t *testing.T) {
 	baseTime := time.Unix(0, 0)
 
 	t.Run("the timer fires while the visit is current", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		fireCount := 0
 		initial := &TestState{
 			name: "initial",
@@ -355,7 +355,7 @@ func TestEntryMachine_AfterFunc(t *testing.T) {
 	})
 
 	t.Run("the timers of the visit are canceled on a transition", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		var fired []string
 		next := &TestState{name: "next"}
 		initial := &TestState{
@@ -382,7 +382,7 @@ func TestEntryMachine_AfterFunc(t *testing.T) {
 	})
 
 	t.Run("the timers of the visit are canceled on a self transition, and the new visit's timer fires", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		visits := 0
 		var fired []int
 		self := &TestState{name: "self"}
@@ -408,7 +408,7 @@ func TestEntryMachine_AfterFunc(t *testing.T) {
 	})
 
 	t.Run("the timers of the visit survive a blocked transition and still fire", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		fireCount := 0
 		next := &TestState{name: "next"}
 		initial := &TestState{
@@ -435,7 +435,7 @@ func TestEntryMachine_AfterFunc(t *testing.T) {
 	})
 
 	t.Run("AfterFunc from inside the exit action is canceled by the transition", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		fireCount := 0
 		next := &TestState{name: "next"}
 		initial := &TestState{
@@ -462,7 +462,7 @@ func TestEntryMachine_AfterFunc(t *testing.T) {
 	})
 
 	t.Run("AfterFunc from inside the exit action survives a blocked transition", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		fireCount := 0
 		next := &TestState{name: "next"}
 		initial := &TestState{
@@ -489,7 +489,7 @@ func TestEntryMachine_AfterFunc(t *testing.T) {
 	})
 
 	t.Run("multiple timers fire in delay order", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		var fired []string
 		initial := &TestState{
 			name: "initial",
@@ -514,7 +514,7 @@ func TestEntryMachine_AfterFunc(t *testing.T) {
 	})
 
 	t.Run("a zero delay timer fires on the next dispatch", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		fireCount := 0
 		initial := &TestState{
 			name: "initial",
@@ -537,7 +537,7 @@ func TestEntryMachine_AfterFunc(t *testing.T) {
 	})
 
 	t.Run("a fired timer is no longer held by the visit", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		initial := &TestState{
 			name: "initial",
 			entry: func(m *EntryMachine, _ Event) state.Command {
@@ -561,7 +561,7 @@ func TestEntryMachine_AfterFunc(t *testing.T) {
 	})
 
 	t.Run("many timers all fire and leave no active timer", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		const timers = 1000
 		fireCount := 0
 		initial := &TestState{
@@ -588,7 +588,7 @@ func TestEntryMachine_AfterFunc(t *testing.T) {
 	})
 
 	t.Run("AfterFunc on a left EntryMachine returns ErrStateLeft and the destination gets no timer", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		var left *EntryMachine
 		fireCount := 0
 		next := &TestState{name: "next"}
@@ -617,7 +617,7 @@ func TestEntryMachine_AfterFunc(t *testing.T) {
 	})
 
 	t.Run("AfterFunc on a handle left by a self transition returns ErrStateLeft", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		var first *EntryMachine
 		fireCount := 0
 		self := &TestState{name: "self"}
@@ -644,7 +644,7 @@ func TestEntryMachine_AfterFunc(t *testing.T) {
 	})
 
 	t.Run("AfterFunc on a handle left by Machine.Stop returns ErrStateLeft", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		var left *EntryMachine
 		fireCount := 0
 		initial := &TestState{

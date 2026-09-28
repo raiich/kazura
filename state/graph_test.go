@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/raiich/kazura/state"
-	"github.com/raiich/kazura/task/eventloop"
+	"github.com/raiich/kazura/task/virtualtime"
 )
 
 // Not guaranteed: the rest of graph validation (state/graph's tests), precedence among
@@ -101,7 +101,7 @@ func TestMachine_Wildcard(t *testing.T) {
 	})
 
 	t.Run("a wildcard transition runs the exit action and cancels the visit's timers", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		initial := &TestState{name: "initial"}
 		var exitEvents []Event
 		var timerFired bool

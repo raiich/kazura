@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/raiich/kazura/task"
-	"github.com/raiich/kazura/task/eventloop"
 	"github.com/raiich/kazura/task/tasktest"
+	"github.com/raiich/kazura/task/virtualtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,11 +23,11 @@ func TestDispatcher(t *testing.T) {
 	})
 }
 
-// pausableHelper is the clock the Dispatcher under test reads, backed by an
-// eventloop dispatcher that runs the callbacks.
+// pausableHelper is the clock the Dispatcher under test reads, backed by a
+// virtualtime dispatcher that runs the callbacks.
 type pausableHelper struct {
 	currentTime time.Time
-	dispatcher  *eventloop.Dispatcher
+	dispatcher  *virtualtime.Dispatcher
 }
 
 // AdvanceTo moves the clock to the absolute time to and runs the callbacks due
@@ -44,7 +44,7 @@ func (h *pausableHelper) AdvanceBy(d time.Duration) error {
 
 func newPausableTest() (*Dispatcher, *pausableHelper) {
 	baseTime := time.Unix(0, 0)
-	base := eventloop.NewDispatcher(baseTime)
+	base := virtualtime.NewDispatcher(baseTime)
 	h := &pausableHelper{currentTime: baseTime, dispatcher: base}
 	d := NewDispatcher(base, func() time.Time { return h.currentTime })
 	return d, h

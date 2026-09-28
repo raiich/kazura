@@ -47,7 +47,7 @@ import (
     "github.com/raiich/kazura/must"
     "github.com/raiich/kazura/state"
     "github.com/raiich/kazura/task"
-    "github.com/raiich/kazura/task/eventloop"
+    "github.com/raiich/kazura/task/virtualtime"
 )
 
 // 可読性向上のための型エイリアス
@@ -172,9 +172,9 @@ func (transitionLogger) Trace(t Transition) {
 
 ```go
 func main() {
-    // イベントループの Dispatcher を作成
+    // 仮想時間の Dispatcher を作成
     baseTime := time.Now()
-    dispatcher := eventloop.NewDispatcher(baseTime)
+    dispatcher := virtualtime.NewDispatcher(baseTime)
 
     // ステートマシンを作成して起動
     vendingMachine := &VendingMachine{
@@ -213,7 +213,7 @@ func main() {
 - **ガード条件** - `OnExit` で条件付き状態遷移を制御
 - **タイムアウト処理** - `AfterFunc` で時間ベースの自動遷移
 - **連鎖遷移** - `Entry` が返した `state.Trigger` で次の遷移を行う
-- **イベントディスパッチ** - `eventloop.Dispatcher` でイベントの順序制御
+- **イベントディスパッチ** - `virtualtime.Dispatcher` でイベントの順序制御
 - **仮想時間** - `FastForward` でテスト用の時間制御
 - **状態遷移トレース** - `state.WithTracer` でロギングやデバッグ向けに状態遷移を観測
 
@@ -222,7 +222,7 @@ func main() {
 ## パッケージ
 
 - **`state/`** - 状態遷移とタイムアウト処理を統一し、タイミング問題を排除するステートマシン
-- **`task/`** - 非同期タスクを直列化する Dispatcher（eventloop。pausable はそれを包んでタイマーを一時停止）で競合状態を防止
+- **`task/`** - 非同期タスクを直列化する Dispatcher（virtualtime。pausable はそれを包んでタイマーを一時停止）で競合状態を防止
 - **`must/`** - プログラミングバグと回復可能なエラーを区別するパニックベースのユーティリティ
 
 ## ドキュメント

@@ -11,7 +11,7 @@ import (
 	"github.com/raiich/kazura/state"
 	"github.com/raiich/kazura/state/graph"
 	"github.com/raiich/kazura/task"
-	"github.com/raiich/kazura/task/eventloop"
+	"github.com/raiich/kazura/task/virtualtime"
 )
 
 var log = slog.Default()
@@ -115,7 +115,7 @@ type VendingMachine struct {
 func main() {
 	log.Info("state diagram:\n```mermaid\n" + graph.Dump(stateGraph) + "\n```")
 	baseTime := time.Now()
-	dispatcher := eventloop.NewDispatcher(baseTime)
+	dispatcher := virtualtime.NewDispatcher(baseTime)
 	vendingMachine := VendingMachine{
 		Dispatcher: dispatcher,
 	}

@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/raiich/kazura/state"
-	"github.com/raiich/kazura/task/eventloop"
+	"github.com/raiich/kazura/task/virtualtime"
 )
 
 // Not guaranteed: timer firing order and cancellation (entrymachine_test.go), calling the
@@ -22,7 +22,7 @@ func TestAfterFuncMachine_Trigger(t *testing.T) {
 	baseTime := time.Unix(0, 0)
 
 	t.Run("Trigger performs the transition and returns no error", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		var machine *state.Machine[State, *TestValue]
 		var triggerErr error
 		var reached State
@@ -49,7 +49,7 @@ func TestAfterFuncMachine_Trigger(t *testing.T) {
 	})
 
 	t.Run("Trigger returns ErrNoTransition for an undefined event", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		var triggerErr error
 		initial := &TestState{
 			name: "initial",
@@ -74,7 +74,7 @@ func TestAfterFuncMachine_Trigger(t *testing.T) {
 	})
 
 	t.Run("Trigger returns the Guarded of the visit's own exit action", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		guarded := &state.Guarded{Reason: errors.New("blocked")}
 		var triggerErr error
 		next := &TestState{name: "next"}
@@ -106,7 +106,7 @@ func TestAfterFuncMachine_Trigger(t *testing.T) {
 	})
 
 	t.Run("Trigger returns the failure of the chained Entry", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		var triggerErr error
 		next := &TestState{
 			name: "next",
@@ -137,7 +137,7 @@ func TestAfterFuncMachine_Trigger(t *testing.T) {
 	})
 
 	t.Run("a transition from a timer callback cancels the other timers of the visit", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		lateCount := 0
 		next := &TestState{name: "next"}
 		initial := &TestState{
@@ -163,7 +163,7 @@ func TestAfterFuncMachine_Trigger(t *testing.T) {
 	})
 
 	t.Run("the handle is stale after its own Trigger succeeds", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		var afterFuncErr, stopErr error
 		secondCount := 0
 		next := &TestState{name: "next"}
@@ -196,7 +196,7 @@ func TestAfterFuncMachine_Trigger(t *testing.T) {
 	})
 
 	t.Run("Trigger on a left AfterFuncMachine returns ErrStateLeft", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		var left *AfterFuncMachine
 		next := &TestState{name: "next"}
 		initial := &TestState{
@@ -228,7 +228,7 @@ func TestAfterFuncMachine_Stop(t *testing.T) {
 	baseTime := time.Unix(0, 0)
 
 	t.Run("Stop stops the machine from a timer callback", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		var exitEvents []Event
 		initial := &TestState{
 			name: "initial",
@@ -258,7 +258,7 @@ func TestAfterFuncMachine_Stop(t *testing.T) {
 	})
 
 	t.Run("Stop on a left AfterFuncMachine returns ErrStateLeft", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		var left *AfterFuncMachine
 		next := &TestState{name: "next"}
 		initial := &TestState{
@@ -290,7 +290,7 @@ func TestAfterFuncMachine_AfterFunc(t *testing.T) {
 	baseTime := time.Unix(0, 0)
 
 	t.Run("a timer callback can schedule another timer of the same visit", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		var firedAt []time.Duration
 		initial := &TestState{
 			name: "initial",
@@ -318,7 +318,7 @@ func TestAfterFuncMachine_AfterFunc(t *testing.T) {
 	})
 
 	t.Run("AfterFunc on a left AfterFuncMachine returns ErrStateLeft", func(t *testing.T) {
-		dispatcher := eventloop.NewDispatcher(baseTime)
+		dispatcher := virtualtime.NewDispatcher(baseTime)
 		var left *AfterFuncMachine
 		fireCount := 0
 		next := &TestState{name: "next"}

@@ -1,4 +1,4 @@
-package eventloop
+package virtualtime
 
 import (
 	"testing"

@@ -81,7 +81,7 @@ var stateGraph = must.Must(state.NewGraph[State](
 ```go
 func main() {
     // Create dispatcher (time management)
-    dispatcher := eventloop.NewDispatcher(time.Now())
+    dispatcher := virtualtime.NewDispatcher(time.Now())
 
     // Initialize data
     vendingMachine := VendingMachine{
@@ -238,7 +238,7 @@ func (s WaitingState) Entry(machine *EntryMachine, event Event) state.Command {
 **Features**:
 - The timer belongs to the visit; cancellation and what the callback may call are the docs of `EntryMachine.AfterFunc` and `AfterFuncMachine`
 - The callback runs on the `Dispatcher`, serialized with everything else submitted to it
-- In tests, you can advance time with `eventloop.Dispatcher.FastForward()`
+- In tests, you can advance time with `virtualtime.Dispatcher.FastForward()`
 
 ### Immediate Post-Processing with the Entry Return Value
 
@@ -278,7 +278,7 @@ Choose a Dispatcher based on your state machine use case.
 
 ```go
 // When you want to control time (games, animation, tests)
-base := eventloop.NewDispatcher(time.Now())
+base := virtualtime.NewDispatcher(time.Now())
 must.NoError(base.FastForward(time.Now())) // Call every frame
 
 // To suspend the pending timers (e.g. while a game is paused).
@@ -289,7 +289,7 @@ must.NoError(dispatcher.Resume())
 ```
 
 **Selection Criteria**:
-- **eventloop**: When you have a periodic update loop (like games) and want manual time control (advance time with `FastForward()`, which runs the functions on its caller's goroutine). Also useful for tests.
+- **virtualtime**: When you have a periodic update loop (like games) and want manual time control (advance time with `FastForward()`, which runs the functions on its caller's goroutine). Also useful for tests.
 - **pausable**: Wraps another dispatcher to suspend and resume its pending timers, e.g. for a game's pause screen
 
 ### Calling the Machine from Other Goroutines
@@ -561,7 +561,7 @@ stateDiagram-v2
 **Features**:
 - Nested state machines: 2-layer structure of Scene and Character
 - Auto-transition: Automatic transition from Result to Title after time elapsed
-- Game loop: Call `eventloop.Dispatcher.FastForward()` every frame
+- Game loop: Call `virtualtime.Dispatcher.FastForward()` every frame
 
 ## Hints
 

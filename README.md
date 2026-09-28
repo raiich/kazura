@@ -47,7 +47,7 @@ import (
     "github.com/raiich/kazura/must"
     "github.com/raiich/kazura/state"
     "github.com/raiich/kazura/task"
-    "github.com/raiich/kazura/task/eventloop"
+    "github.com/raiich/kazura/task/virtualtime"
 )
 
 // Type aliases for better readability
@@ -172,9 +172,9 @@ func (transitionLogger) Trace(t Transition) {
 
 ```go
 func main() {
-    // Create event loop dispatcher
+    // Create virtual-time dispatcher
     baseTime := time.Now()
-    dispatcher := eventloop.NewDispatcher(baseTime)
+    dispatcher := virtualtime.NewDispatcher(baseTime)
 
     // Create and launch state machine
     vendingMachine := &VendingMachine{
@@ -213,7 +213,7 @@ This example demonstrates the following kazura features:
 - **Guard Conditions**: Control conditional state transitions with `OnExit`
 - **Timeout Handling**: Time-based automatic transitions with `AfterFunc`
 - **Chained Transitions**: Drive the next transition with the `state.Trigger` that `Entry` returns
-- **Event Dispatching**: Event ordering control with `eventloop.Dispatcher`
+- **Event Dispatching**: Event ordering control with `virtualtime.Dispatcher`
 - **Virtual Time**: Time control for testing with `FastForward`
 - **State Transition Tracing**: Observe transitions via `state.WithTracer` for logging and debugging
 
@@ -222,7 +222,7 @@ See the code example at [examples/vending-machine](examples/vending-machine/main
 ## Packages
 
 - **`state/`** - State machines that unify transitions and timeout handling, eliminating timing issues
-- **`task/`** - Dispatchers that serialize async tasks (eventloop; pausable wraps one to pause its timers) to prevent race conditions
+- **`task/`** - Dispatchers that serialize async tasks (virtualtime; pausable wraps one to pause its timers) to prevent race conditions
 - **`must/`** - Panic-based utilities that distinguish programming bugs from recoverable errors
 
 ## Documentation
