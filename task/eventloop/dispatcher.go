@@ -4,12 +4,13 @@ package eventloop
 
 import (
 	"errors"
+	"fmt"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/raiich/kazura/task"
-	"github.com/raiich/kazura/task/internal"
 )
 
 // ErrRunning reports a [Dispatcher.FastForward] while one runs.
@@ -44,7 +45,7 @@ func (d *Dispatcher) FastForward(to time.Time) error {
 		if !ok {
 			return nil
 		}
-		if err := head.Run(); err != nil {
+		if err := head.run(); err != nil {
 			d.shutdown()
 			return err
 		}
@@ -52,14 +53,13 @@ func (d *Dispatcher) FastForward(to time.Time) error {
 }
 
 // proceedAndDequeue advances time and dequeues the next task if available.
-// Returns the next task and whether one was found within the time limit and an error if any occurs during processing.
-func (d *Dispatcher) proceedAndDequeue(end time.Time) (*internal.PendingTask, bool) {
+// Returns the next task and whether one was due by end.
+func (d *Dispatcher) proceedAndDequeue(end time.Time) (*pendingTask, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// A shut-down dispatcher runs nothing further. Queued tasks (canceled by
-	// shutdown, or submitted afterward) stay so a Timer.Stop can still cancel
-	// them, but they never execute.
+	// A shut-down dispatcher runs nothing further. Queued tasks stay so a
+	// Timer.Stop can still cancel them, but they never execute.
 	if d.ended {
 		return nil, false
 	}
@@ -77,7 +77,7 @@ func (d *Dispatcher) proceedAndDequeue(end time.Time) (*internal.PendingTask, bo
 
 // dequeue removes and returns the earliest scheduled task if it should execute before end time.
 // Returns the task and whether one was available within the time limit.
-func (d *Dispatcher) dequeue(end time.Time) (*internal.PendingTask, bool) {
+func (d *Dispatcher) dequeue(end time.Time) (*pendingTask, bool) {
 	if len(d.tasks) == 0 {
 		return nil, false
 	}
@@ -97,13 +97,9 @@ func (d *Dispatcher) shutdown() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	d.ended = true
-	// Cancel queued tasks so InvokeFunc waiters settle. They stay in the queue
-	// (not removed) so an AfterFunc Timer.Stop still reports it prevented
+	// Queued tasks stay (not removed) so a Timer.Stop still reports it prevented
 	// execution; the ended gate keeps them from running.
-	for _, entry := range d.tasks {
-		entry.task.Cancel()
-	}
+	d.ended = true
 }
 
 // AfterFunc schedules f to run once the simulated time has advanced by duration.
@@ -115,7 +111,7 @@ func (d *Dispatcher) AfterFunc(duration time.Duration, f func()) task.Timer {
 
 	// Not before advancedTo, which dequeue would rewind the clock to.
 	at := d.advancedTo.Add(max(duration, 0))
-	t := internal.NewPendingTask(f)
+	t := &pendingTask{fn: f}
 	d.enqueue(at, t)
 	return &taskTimer{
 		dispatcher: d,
@@ -123,24 +119,7 @@ func (d *Dispatcher) AfterFunc(duration time.Duration, f func()) task.Timer {
 	}
 }
 
-// InvokeFunc schedules f to run at the current simulated time, executed by the
-// next FastForward.
-func (d *Dispatcher) InvokeFunc(f func()) task.Task {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	// A Task must settle, so a shut-down dispatcher cannot leave it queued-but-unrun
-	// (Wait would block forever); settle it as canceled at submission instead.
-	if d.ended {
-		return internal.CanceledTask
-	}
-
-	t := internal.NewPendingTask(f)
-	d.enqueue(d.advancedTo, t)
-	return t
-}
-
-func (d *Dispatcher) enqueue(at time.Time, pending *internal.PendingTask) {
+func (d *Dispatcher) enqueue(at time.Time, pending *pendingTask) {
 	// Find the correct insertion point to maintain chronological order
 	i := 0
 	for i < len(d.tasks) {
@@ -167,7 +146,7 @@ func (d *Dispatcher) insertTask(i int, entry scheduledTask) {
 
 // dropTask removes a specific scheduled task from the queue.
 // Returns true if the task was found and removed, false otherwise.
-func (d *Dispatcher) dropTask(task *internal.PendingTask) bool {
+func (d *Dispatcher) dropTask(task *pendingTask) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -191,18 +170,34 @@ func NewDispatcher(start time.Time) *Dispatcher {
 // scheduledTask represents a task scheduled to execute at a specific time.
 type scheduledTask struct {
 	at   time.Time
-	task *internal.PendingTask
+	task *pendingTask
 }
 
 // taskTimer implements the task.Timer interface for canceling scheduled tasks.
 type taskTimer struct {
 	dispatcher *Dispatcher
-	task       *internal.PendingTask
+	task       *pendingTask
 }
 
-// Stop cancels the scheduled task; see [task.Timer.Stop]. A task the dispatcher
-// canceled on shutdown is still queued, so Stop still reports that it prevented
-// the function.
+// Stop cancels the scheduled task; see [task.Timer.Stop]. A task left queued
+// by a shutdown never runs, so Stop still reports that it prevented the function.
 func (t *taskTimer) Stop() bool {
 	return t.dispatcher.dropTask(t.task)
+}
+
+// pendingTask is a function queued for serialized execution. Its pointer
+// identifies the entry that a taskTimer drops.
+type pendingTask struct {
+	fn func()
+}
+
+// run executes the function. A panic is recovered and returned as an error.
+func (t *pendingTask) run() (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic: %v\n%s", r, debug.Stack())
+		}
+	}()
+	t.fn()
+	return nil
 }

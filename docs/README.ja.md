@@ -222,12 +222,10 @@ func main() {
 ## パッケージ
 
 - **`state/`** - 状態遷移とタイムアウト処理を統一し、タイミング問題を排除するステートマシン
-- **`task/`** - 非同期タスクを直列化する Dispatcher（queue、mutex、eventloop。pausable はそれらを包んでタイマーを一時停止）で競合状態を防止
+- **`task/`** - 非同期タスクを直列化する Dispatcher（eventloop。pausable はそれを包んでタイマーを一時停止）で競合状態を防止
 - **`must/`** - プログラミングバグと回復可能なエラーを区別するパニックベースのユーティリティ
 
 ## ドキュメント
-
-<!-- TODO -->
 
 - [Best Practices](state-machine-best-practices.md)
 

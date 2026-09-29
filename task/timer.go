@@ -1,7 +1,12 @@
 package task
 
 // Timer represents a stoppable scheduled task, similar to [time.Timer].
-type Timer interface {
+//
+// Timer is an alias of an interface literal so that it is a general-purpose
+// timer type rather than one tied to this module: a Dispatcher that another
+// module declares with the same literal has the identical AfterFunc signature,
+// so one implementation satisfies both without a shared import.
+type Timer = interface {
 	// Stop prevents the scheduled function from executing. It returns true if
 	// the call successfully prevents execution, false if the function has
 	// already been executed or Stop has already been called.
@@ -14,3 +19,7 @@ type Timer interface {
 	// Stop is safe for concurrent use.
 	Stop() bool
 }
+
+// Fails to compile if Timer becomes a named interface, which would break the
+// cross-module identity above.
+var _ func() Timer = func() interface{ Stop() bool } { return nil }

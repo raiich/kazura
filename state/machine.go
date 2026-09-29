@@ -48,7 +48,7 @@ func NewMachine[S State[T], T any](g *graph.Graph[S, reflect.Type], v T, opts ..
 // A Machine is not safe for concurrent use. Calls from other goroutines go
 // through the [task.Dispatcher] that runs its timers, serialized with them:
 //
-//	dispatcher.InvokeFunc(func() {
+//	dispatcher.AfterFunc(0, func() {
 //	    machine.Trigger(event)
 //	})
 type Machine[S State[T], T any] struct {

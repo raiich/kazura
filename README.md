@@ -222,12 +222,10 @@ See the code example at [examples/vending-machine](examples/vending-machine/main
 ## Packages
 
 - **`state/`** - State machines that unify transitions and timeout handling, eliminating timing issues
-- **`task/`** - Dispatchers that serialize async tasks (queue, mutex, eventloop; pausable wraps one to pause its timers) to prevent race conditions
+- **`task/`** - Dispatchers that serialize async tasks (eventloop; pausable wraps one to pause its timers) to prevent race conditions
 - **`must/`** - Panic-based utilities that distinguish programming bugs from recoverable errors
 
 ## Documentation
-
-<!-- TODO -->
 
 - [Best Practices](docs/state-machine-best-practices.md)
 

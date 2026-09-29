@@ -39,13 +39,6 @@ func (d *Dispatcher) AfterFunc(delay time.Duration, f func()) task.Timer {
 	return &trackedTimer{d: d, entry: entry}
 }
 
-// InvokeFunc submits f to the base dispatcher for immediate serialized execution.
-// Unlike AfterFunc, it is not affected by Pause / Resume: f is not buffered while
-// paused, since it carries no delay to suspend.
-func (d *Dispatcher) InvokeFunc(f func()) task.Task {
-	return d.base.InvokeFunc(f)
-}
-
 func (d *Dispatcher) stop(entry *trackedEntry) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -56,8 +49,8 @@ func (d *Dispatcher) stop(entry *trackedEntry) bool {
 	}
 	delete(d.tracked, entry)
 	if timer := entry.baseTimer; timer != nil {
-		// Delegate to the base timer's Stop. Returns false if the base
-		// dispatcher has already executed the callback (TryFire succeeded).
+		// The base's Stop reports false once the base has taken the callback to
+		// run it.
 		return timer.Stop()
 	}
 	// Paused: callback has not been dispatched yet, so Stop succeeds.

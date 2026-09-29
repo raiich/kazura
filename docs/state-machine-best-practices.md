@@ -278,46 +278,31 @@ Choose a Dispatcher based on your state machine use case.
 
 ```go
 // When you want to control time (games, animation, tests)
-dispatcher := eventloop.NewDispatcher(time.Now())
-must.NoError(dispatcher.FastForward(time.Now())) // Call every frame
+base := eventloop.NewDispatcher(time.Now())
+must.NoError(base.FastForward(time.Now())) // Call every frame
 
-// For real-time processing
-dispatcher := mutex.NewDispatcher()
-// or
-dispatcher := queue.NewDispatcher()
-go dispatcher.Serve(ctx)
-
-// To suspend the pending timers (e.g. while a game is paused)
-dispatcher := pausable.NewDispatcher(mutex.NewDispatcher(), time.Now)
+// To suspend the pending timers (e.g. while a game is paused).
+// The clock passed is the one the base is advanced with (time.Now above).
+dispatcher := pausable.NewDispatcher(base, time.Now)
 must.NoError(dispatcher.Pause())
 must.NoError(dispatcher.Resume())
 ```
 
 **Selection Criteria**:
-- **eventloop**: When you have a periodic update loop (like games) and want manual time control (advance time with `FastForward()`). Also useful for tests.
-- **mutex/queue**: For real-time processing
-- **pausable**: Wraps another dispatcher to suspend and resume its pending timers
-
-**Dispatcher Feature Comparison**:
-
-| Dispatcher | Time Control            | Execution Method              | Use Case                 |
-|------------|-------------------------|-------------------------------|--------------------------|
-| eventloop  | Manual (FastForward)    | Caller goroutine              | Game loops, tests        |
-| queue      | Real-time (time.AfterFunc) | Separate goroutine (Serve) | Web servers, workers     |
-| mutex      | Real-time (time.AfterFunc) | InvokeFunc: caller goroutine; timers: timer goroutine | Simple servers |
-| pausable   | The base's, plus Pause / Resume | That of the base dispatcher | Games with a pause screen |
+- **eventloop**: When you have a periodic update loop (like games) and want manual time control (advance time with `FastForward()`, which runs the functions on its caller's goroutine). Also useful for tests.
+- **pausable**: Wraps another dispatcher to suspend and resume its pending timers, e.g. for a game's pause screen
 
 ### Calling the Machine from Other Goroutines
 
 Calls from other goroutines go through the `Dispatcher` that runs the machine's timers:
 
 ```go
-dispatcher.InvokeFunc(func() {
+dispatcher.AfterFunc(0, func() {
     must.NoError(machine.Trigger(event))
 })
 ```
 
-Inside a callback (`Entry`, an exit action or a timer callback) do not call `InvokeFunc` or `Task.Wait`; either may deadlock, depending on the dispatcher. To act on the machine after the callback, use `machine.AfterFunc(dispatcher, 0, ...)`.
+The function runs later on the dispatcher, so handle Trigger's error inside it.
 
 ## Guard Conditions
 
@@ -597,7 +582,6 @@ stateDiagram-v2
 3. **Forgetting OnExit Registration**: Don't forget to register guard conditions in `Entry`
 4. **Missing State Transition Graph Definitions**: Explicitly define all transitions
 5. **State Explosion**: Consider hierarchies when there are too many states
-6. **InvokeFunc or Task.Wait from a callback**: Use `machine.AfterFunc(dispatcher, 0, ...)` instead
 
 ### When to Use State Machines
 

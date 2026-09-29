@@ -128,7 +128,6 @@ func TestDispatcher_ShutdownAfterPanic(t *testing.T) {
 	timer := d.AfterFunc(1*time.Millisecond, func() { ran = true })
 	assert.True(t, timer.Stop(), "Stop cancels the still-queued task")
 	assert.False(t, timer.Stop(), "second Stop reports the task was already canceled")
-	assert.ErrorIs(t, d.InvokeFunc(func() { ran = true }).Wait(t.Context()), task.ErrCanceled)
 
 	// A timer left un-stopped after shutdown never fires, even on a later advance.
 	d.AfterFunc(1*time.Millisecond, func() { ran = true })

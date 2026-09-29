@@ -249,20 +249,6 @@ func TestDispatcher_AfterFuncDuringPause(t *testing.T) {
 	})
 }
 
-func TestDispatcher_InvokeFuncDuringPause(t *testing.T) {
-	// InvokeFunc carries no delay to suspend, so Pause does not buffer it: it runs
-	// on the next time advance even while paused.
-	d, h := newPausableTest()
-	require.NoError(t, d.Pause())
-
-	executed := false
-	invoked := d.InvokeFunc(func() { executed = true })
-	require.NoError(t, h.Advance(0))
-
-	assert.True(t, executed, "InvokeFunc should run while paused")
-	assert.NoError(t, invoked.Wait(t.Context()))
-}
-
 func TestDispatcher_MultipleCycles(t *testing.T) {
 	t.Run("remaining accumulates correctly", func(t *testing.T) {
 		d, h := newPausableTest()
