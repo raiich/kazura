@@ -20,8 +20,9 @@ var ErrRunning = errors.New("eventloop: FastForward is already running")
 type Dispatcher struct {
 	running atomic.Bool
 
-	mu  sync.Mutex
-	now time.Time
+	mu sync.Mutex
+	// advancedTo is the time FastForward has advanced to.
+	advancedTo time.Time
 
 	ended bool
 	// Ordered list of scheduled tasks (earliest first)
@@ -65,9 +66,9 @@ func (d *Dispatcher) proceedAndDequeue(end time.Time) (*internal.PendingTask, bo
 
 	head, ok := d.dequeue(end)
 	if !ok {
-		if end.After(d.now) {
+		if end.After(d.advancedTo) {
 			// No more tasks before end time, advance to end
-			d.now = end
+			d.advancedTo = end
 		}
 		return nil, false
 	}
@@ -88,7 +89,7 @@ func (d *Dispatcher) dequeue(end time.Time) (*internal.PendingTask, bool) {
 	// Remove the task from the queue
 	d.tasks = tail
 	// Advance time to the task's scheduled time
-	d.now = head.at
+	d.advancedTo = head.at
 	return head.task, true
 }
 
@@ -112,8 +113,8 @@ func (d *Dispatcher) AfterFunc(duration time.Duration, f func()) task.Timer {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Not before now, which dequeue would rewind the clock to.
-	at := d.now.Add(max(duration, 0))
+	// Not before advancedTo, which dequeue would rewind the clock to.
+	at := d.advancedTo.Add(max(duration, 0))
 	t := internal.NewPendingTask(f)
 	d.enqueue(at, t)
 	return &taskTimer{
@@ -135,7 +136,7 @@ func (d *Dispatcher) InvokeFunc(f func()) task.Task {
 	}
 
 	t := internal.NewPendingTask(f)
-	d.enqueue(d.now, t)
+	d.enqueue(d.advancedTo, t)
 	return t
 }
 
@@ -181,9 +182,9 @@ func (d *Dispatcher) dropTask(task *internal.PendingTask) bool {
 }
 
 // NewDispatcher creates a new Dispatcher with the specified time as the starting point.
-func NewDispatcher(now time.Time) *Dispatcher {
+func NewDispatcher(start time.Time) *Dispatcher {
 	return &Dispatcher{
-		now: now,
+		advancedTo: start,
 	}
 }
 
