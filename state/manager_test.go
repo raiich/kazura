@@ -399,13 +399,13 @@ func TestManager_NestedOperationsInCallbacks(t *testing.T) {
 			operations = append(operations, fmt.Sprintf("get:%d", manager.Get()))
 
 			manager.Set(2)
-			operations = append(operations, fmt.Sprintf("set:2"))
+			operations = append(operations, "set:2")
 
 			// Schedule another timer from within callback
 			manager.AfterFunc(dispatcher, 25*time.Millisecond, func() {
 				operations = append(operations, fmt.Sprintf("nested_get:%d", manager.Get()))
 				manager.Set(3)
-				operations = append(operations, fmt.Sprintf("nested_set:3"))
+				operations = append(operations, "nested_set:3")
 			})
 
 			operations = append(operations, fmt.Sprintf("after_nested_timer:%d", manager.Get()))

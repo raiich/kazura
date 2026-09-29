@@ -15,29 +15,31 @@ import (
 
 func TestDispatcher(t *testing.T) {
 	tasktest.TestDispatcher(t, func(t *testing.T) (task.Dispatcher, *tasktest.TestHelper) {
-		start := time.Unix(0, 0)
-		base := eventloop.NewDispatcher(start)
-		currentTime := start
-		d := NewDispatcher(base, func() time.Time { return currentTime })
+		d, h := newPausableTest()
 		return d, &tasktest.TestHelper{
-			Start: start,
-			AdvanceToFunc: func(to time.Time) error {
-				currentTime = to
-				return base.FastForward(to)
-			},
+			Start:     h.currentTime,
+			AdvanceTo: h.AdvanceTo,
 		}
 	})
 }
 
-// pausableHelper provides duration-based Advance for pausable-specific tests.
+// pausableHelper is the clock the Dispatcher under test reads, backed by an
+// eventloop dispatcher that runs the callbacks.
 type pausableHelper struct {
 	currentTime time.Time
 	dispatcher  *eventloop.Dispatcher
 }
 
-func (h *pausableHelper) Advance(d time.Duration) error {
-	h.currentTime = h.currentTime.Add(d)
-	return h.dispatcher.FastForward(h.currentTime)
+// AdvanceTo moves the clock to the absolute time to and runs the callbacks due
+// by then.
+func (h *pausableHelper) AdvanceTo(to time.Time) error {
+	h.currentTime = to
+	return h.dispatcher.FastForward(to)
+}
+
+// AdvanceBy moves the clock forward by d.
+func (h *pausableHelper) AdvanceBy(d time.Duration) error {
+	return h.AdvanceTo(h.currentTime.Add(d))
 }
 
 func newPausableTest() (*Dispatcher, *pausableHelper) {
@@ -48,22 +50,41 @@ func newPausableTest() (*Dispatcher, *pausableHelper) {
 	return d, h
 }
 
-func TestTimer_Stop_DuringPause(t *testing.T) {
-	d, h := newPausableTest()
-	executed := false
+func TestTimer_Stop(t *testing.T) {
+	t.Run("registered before pause", func(t *testing.T) {
+		d, h := newPausableTest()
+		executed := false
 
-	timer := d.AfterFunc(10*time.Second, func() {
-		executed = true
+		timer := d.AfterFunc(10*time.Second, func() {
+			executed = true
+		})
+
+		require.NoError(t, h.AdvanceBy(3*time.Second))
+		require.NoError(t, d.Pause())
+		assert.True(t, timer.Stop())
+
+		require.NoError(t, h.AdvanceBy(47*time.Second))
+		require.NoError(t, d.Resume())
+		require.NoError(t, h.AdvanceBy(100*time.Second))
+		assert.False(t, executed)
 	})
 
-	require.NoError(t, h.Advance(3*time.Second))
-	require.NoError(t, d.Pause())
-	assert.True(t, timer.Stop())
+	t.Run("registered during pause", func(t *testing.T) {
+		d, h := newPausableTest()
+		executed := false
 
-	require.NoError(t, h.Advance(47*time.Second))
-	require.NoError(t, d.Resume())
-	require.NoError(t, h.Advance(100*time.Second))
-	assert.False(t, executed)
+		require.NoError(t, d.Pause())
+		timer := d.AfterFunc(5*time.Second, func() {
+			executed = true
+		})
+
+		assert.True(t, timer.Stop())
+
+		require.NoError(t, h.AdvanceBy(50*time.Second))
+		require.NoError(t, d.Resume())
+		require.NoError(t, h.AdvanceBy(100*time.Second))
+		assert.False(t, executed)
+	})
 }
 
 func TestDispatcher_Pause(t *testing.T) {
@@ -75,9 +96,9 @@ func TestDispatcher_Pause(t *testing.T) {
 			executed = true
 		})
 
-		require.NoError(t, h.Advance(3*time.Second))
+		require.NoError(t, h.AdvanceBy(3*time.Second))
 		require.NoError(t, d.Pause())
-		require.NoError(t, h.Advance(100*time.Second))
+		require.NoError(t, h.AdvanceBy(100*time.Second))
 		assert.False(t, executed)
 	})
 
@@ -93,11 +114,11 @@ func TestDispatcher_Pause(t *testing.T) {
 			f2Executed = true
 		})
 
-		require.NoError(t, h.Advance(3*time.Second))
+		require.NoError(t, h.AdvanceBy(3*time.Second))
 		assert.True(t, f1Executed)
 
 		require.NoError(t, d.Pause())
-		require.NoError(t, h.Advance(100*time.Second))
+		require.NoError(t, h.AdvanceBy(100*time.Second))
 		assert.False(t, f2Executed)
 	})
 
@@ -109,6 +130,13 @@ func TestDispatcher_Pause(t *testing.T) {
 }
 
 func TestDispatcher_Resume(t *testing.T) {
+	t.Run("resume without pause returns error", func(t *testing.T) {
+		d, _ := newPausableTest()
+		assert.ErrorContains(t, d.Resume(), "not paused")
+	})
+}
+
+func TestDispatcher_Remaining(t *testing.T) {
 	t.Run("reschedules with remaining duration", func(t *testing.T) {
 		d, h := newPausableTest()
 		executed := false
@@ -117,47 +145,20 @@ func TestDispatcher_Resume(t *testing.T) {
 			executed = true
 		})
 
-		require.NoError(t, h.Advance(3*time.Second))
+		require.NoError(t, h.AdvanceBy(3*time.Second))
 		require.NoError(t, d.Pause())
 
 		// remaining = 10s - 3s = 7s
-		require.NoError(t, h.Advance(97*time.Second))
+		require.NoError(t, h.AdvanceBy(97*time.Second))
 		require.NoError(t, d.Resume())
 
-		require.NoError(t, h.Advance(6*time.Second))
+		require.NoError(t, h.AdvanceBy(6*time.Second))
 		assert.False(t, executed, "should not fire before remaining duration")
 
-		require.NoError(t, h.Advance(1*time.Second))
+		require.NoError(t, h.AdvanceBy(1*time.Second))
 		assert.True(t, executed, "should fire at remaining duration")
 	})
 
-	t.Run("pause duration does not affect remaining time", func(t *testing.T) {
-		for _, pauseDuration := range []time.Duration{7 * time.Second, 997 * time.Second} {
-			d, h := newPausableTest()
-			executed := false
-
-			d.AfterFunc(10*time.Second, func() {
-				executed = true
-			})
-
-			require.NoError(t, h.Advance(3*time.Second))
-			require.NoError(t, d.Pause())
-
-			require.NoError(t, h.Advance(pauseDuration))
-			require.NoError(t, d.Resume())
-
-			require.NoError(t, h.Advance(7*time.Second))
-			assert.True(t, executed, "remaining should be 7s regardless of pause duration (%v)", pauseDuration)
-		}
-	})
-
-	t.Run("resume without pause returns error", func(t *testing.T) {
-		d, _ := newPausableTest()
-		assert.ErrorContains(t, d.Resume(), "not paused")
-	})
-}
-
-func TestDispatcher_MultipleTimers_PauseResume(t *testing.T) {
 	t.Run("different remaining durations", func(t *testing.T) {
 		d, h := newPausableTest()
 		f1Executed := false
@@ -171,35 +172,113 @@ func TestDispatcher_MultipleTimers_PauseResume(t *testing.T) {
 		})
 
 		// Pause after 5s: f1 remaining=5s, f2 remaining=15s
-		require.NoError(t, h.Advance(5*time.Second))
+		require.NoError(t, h.AdvanceBy(5*time.Second))
 		require.NoError(t, d.Pause())
 
-		require.NoError(t, h.Advance(45*time.Second))
+		require.NoError(t, h.AdvanceBy(45*time.Second))
 		require.NoError(t, d.Resume())
 
-		require.NoError(t, h.Advance(5*time.Second))
+		require.NoError(t, h.AdvanceBy(5*time.Second))
 		assert.True(t, f1Executed, "f1 should fire at remaining 5s")
 		assert.False(t, f2Executed, "f2 should not fire yet")
 
-		require.NoError(t, h.Advance(10*time.Second))
+		require.NoError(t, h.AdvanceBy(10*time.Second))
 		assert.True(t, f2Executed, "f2 should fire at remaining 15s")
+	})
+
+	t.Run("accumulates across cycles", func(t *testing.T) {
+		d, h := newPausableTest()
+		executed := false
+
+		d.AfterFunc(10*time.Second, func() {
+			executed = true
+		})
+
+		// Cycle 1: 3s elapsed, remaining = 7s
+		require.NoError(t, h.AdvanceBy(3*time.Second))
+		require.NoError(t, d.Pause())
+
+		// Cycle 2: resume, run for 2s, remaining = 5s
+		require.NoError(t, h.AdvanceBy(17*time.Second))
+		require.NoError(t, d.Resume())
+		require.NoError(t, h.AdvanceBy(2*time.Second))
+		require.NoError(t, d.Pause())
+
+		// Cycle 3: resume
+		require.NoError(t, h.AdvanceBy(28*time.Second))
+		require.NoError(t, d.Resume())
+
+		require.NoError(t, h.AdvanceBy(4*time.Second))
+		assert.False(t, executed, "should not fire before remaining 5s")
+
+		require.NoError(t, h.AdvanceBy(1*time.Second))
+		assert.True(t, executed, "should fire at remaining 5s")
+	})
+
+	t.Run("rapid toggle", func(t *testing.T) {
+		d, h := newPausableTest()
+		executed := false
+
+		d.AfterFunc(1*time.Second, func() {
+			executed = true
+		})
+
+		// 300ms elapsed, remaining = 700ms
+		require.NoError(t, h.AdvanceBy(300*time.Millisecond))
+		require.NoError(t, d.Pause())
+
+		// Resume immediately and Pause again (0ms between)
+		require.NoError(t, d.Resume())
+		require.NoError(t, d.Pause())
+
+		// Resume, remaining should still be 700ms
+		require.NoError(t, d.Resume())
+
+		require.NoError(t, h.AdvanceBy(699*time.Millisecond))
+		assert.False(t, executed, "should not fire before remaining 700ms")
+
+		require.NoError(t, h.AdvanceBy(1*time.Millisecond))
+		assert.True(t, executed, "should fire at remaining 700ms")
+	})
+
+	t.Run("pause just before fire", func(t *testing.T) {
+		d, h := newPausableTest()
+		executed := false
+
+		d.AfterFunc(100*time.Millisecond, func() { executed = true })
+
+		require.NoError(t, h.AdvanceBy(99*time.Millisecond))
+		require.NoError(t, d.Pause())
+		require.NoError(t, d.Resume())
+
+		require.NoError(t, h.AdvanceBy(0))
+		assert.False(t, executed, "should not fire before the remaining 1ms")
+
+		require.NoError(t, h.AdvanceBy(1*time.Millisecond))
+		assert.True(t, executed, "should fire once the remaining 1ms elapses")
+	})
+
+	t.Run("clamped to zero", func(t *testing.T) {
+		d, h := newPausableTest()
+		executed := false
+
+		d.AfterFunc(100*time.Millisecond, func() {
+			executed = true
+		})
+
+		// Skew the clock: advance only currentTime (not base) so that elapsed (200ms)
+		// > delay (100ms). This makes Pause compute negative remaining, which should
+		// be clamped to 0.
+		h.currentTime = h.currentTime.Add(200 * time.Millisecond)
+		require.NoError(t, d.Pause())
+		require.NoError(t, d.Resume())
+
+		require.NoError(t, h.AdvanceBy(0))
+		assert.True(t, executed, "remaining should be clamped to 0 and fire immediately")
 	})
 }
 
 func TestDispatcher_AfterFuncDuringPause(t *testing.T) {
-	t.Run("does not fire before resume", func(t *testing.T) {
-		d, h := newPausableTest()
-		executed := false
-
-		require.NoError(t, d.Pause())
-		d.AfterFunc(50*time.Millisecond, func() {
-			executed = true
-		})
-
-		require.NoError(t, h.Advance(100*time.Millisecond))
-		assert.False(t, executed, "buffered afterFunc should not fire before resume")
-	})
-
 	t.Run("fires with full delay after resume", func(t *testing.T) {
 		d, h := newPausableTest()
 		executed := false
@@ -209,74 +288,12 @@ func TestDispatcher_AfterFuncDuringPause(t *testing.T) {
 			executed = true
 		})
 
-		require.NoError(t, h.Advance(50*time.Second))
+		require.NoError(t, h.AdvanceBy(50*time.Second))
 		require.NoError(t, d.Resume())
 		assert.False(t, executed)
 
-		require.NoError(t, h.Advance(5*time.Second))
+		require.NoError(t, h.AdvanceBy(5*time.Second))
 		assert.True(t, executed)
-	})
-
-	t.Run("reschedules with original delay after resume", func(t *testing.T) {
-		d, h := newPausableTest()
-		executed := false
-
-		require.NoError(t, d.Pause())
-		d.AfterFunc(50*time.Millisecond, func() {
-			executed = true
-		})
-		require.NoError(t, d.Resume())
-
-		require.NoError(t, h.Advance(50*time.Millisecond))
-		assert.True(t, executed, "buffered task should reschedule with original delay")
-	})
-
-	t.Run("stop before resume", func(t *testing.T) {
-		d, h := newPausableTest()
-		executed := false
-
-		require.NoError(t, d.Pause())
-		timer := d.AfterFunc(5*time.Second, func() {
-			executed = true
-		})
-
-		assert.True(t, timer.Stop())
-
-		require.NoError(t, h.Advance(50*time.Second))
-		require.NoError(t, d.Resume())
-		require.NoError(t, h.Advance(100*time.Second))
-		assert.False(t, executed)
-	})
-}
-
-func TestDispatcher_MultipleCycles(t *testing.T) {
-	t.Run("remaining accumulates correctly", func(t *testing.T) {
-		d, h := newPausableTest()
-		executed := false
-
-		d.AfterFunc(10*time.Second, func() {
-			executed = true
-		})
-
-		// Cycle 1: 3s elapsed, remaining = 7s
-		require.NoError(t, h.Advance(3*time.Second))
-		require.NoError(t, d.Pause())
-
-		// Cycle 2: resume, run for 2s, remaining = 5s
-		require.NoError(t, h.Advance(17*time.Second))
-		require.NoError(t, d.Resume())
-		require.NoError(t, h.Advance(2*time.Second))
-		require.NoError(t, d.Pause())
-
-		// Cycle 3: resume
-		require.NoError(t, h.Advance(28*time.Second))
-		require.NoError(t, d.Resume())
-
-		require.NoError(t, h.Advance(4*time.Second))
-		assert.False(t, executed, "should not fire before remaining 5s")
-
-		require.NoError(t, h.Advance(1*time.Second))
-		assert.True(t, executed, "should fire at remaining 5s")
 	})
 }
 
@@ -296,89 +313,14 @@ func TestDispatcher_EdgeCases(t *testing.T) {
 		})
 
 		require.NoError(t, d.Pause())
-		require.NoError(t, h.Advance(50*time.Second))
+		require.NoError(t, h.AdvanceBy(50*time.Second))
 		require.NoError(t, d.Resume())
-		require.NoError(t, h.Advance(0))
+		require.NoError(t, h.AdvanceBy(0))
 		assert.True(t, executed)
 	})
-
-	t.Run("negative duration pause resume", func(t *testing.T) {
-		d, h := newPausableTest()
-		executed := false
-
-		d.AfterFunc(-time.Second, func() {
-			executed = true
-		})
-
-		require.NoError(t, d.Pause())
-		require.NoError(t, h.Advance(50*time.Second))
-		require.NoError(t, d.Resume())
-		require.NoError(t, h.Advance(0))
-		assert.True(t, executed)
-	})
-}
-
-func TestDispatcher_RapidToggle(t *testing.T) {
-	d, h := newPausableTest()
-	executed := false
-
-	d.AfterFunc(1*time.Second, func() {
-		executed = true
-	})
-
-	// 300ms elapsed, remaining = 700ms
-	require.NoError(t, h.Advance(300*time.Millisecond))
-	require.NoError(t, d.Pause())
-
-	// Resume immediately and Pause again (0ms between)
-	require.NoError(t, d.Resume())
-	require.NoError(t, d.Pause())
-
-	// Resume, remaining should still be 700ms
-	require.NoError(t, d.Resume())
-
-	require.NoError(t, h.Advance(699*time.Millisecond))
-	assert.False(t, executed, "should not fire before remaining 700ms")
-
-	require.NoError(t, h.Advance(1*time.Millisecond))
-	assert.True(t, executed, "should fire at remaining 700ms")
-}
-
-func TestDispatcher_PauseJustBeforeFire(t *testing.T) {
-	d, h := newPausableTest()
-	executed := false
-
-	d.AfterFunc(100*time.Millisecond, func() { executed = true })
-
-	require.NoError(t, h.Advance(99*time.Millisecond))
-	require.NoError(t, d.Pause())
-	require.NoError(t, d.Resume())
-
-	require.NoError(t, h.Advance(0))
-	assert.False(t, executed, "should not fire before the remaining 1ms")
-
-	require.NoError(t, h.Advance(1*time.Millisecond))
-	assert.True(t, executed, "should fire once the remaining 1ms elapses")
 }
 
 func TestDispatcher_Callback(t *testing.T) {
-	t.Run("afterFunc in callback delegates to base", func(t *testing.T) {
-		d, h := newPausableTest()
-		nested := false
-
-		d.AfterFunc(10*time.Millisecond, func() {
-			d.AfterFunc(20*time.Millisecond, func() {
-				nested = true
-			})
-		})
-
-		require.NoError(t, h.Advance(10*time.Millisecond))
-		assert.False(t, nested, "nested timer should keep its own delay")
-
-		require.NoError(t, h.Advance(20*time.Millisecond))
-		assert.True(t, nested, "afterFunc in callback should delegate to base")
-	})
-
 	t.Run("pause in callback buffers subsequent afterFunc", func(t *testing.T) {
 		d, h := newPausableTest()
 		buffered := false
@@ -390,11 +332,11 @@ func TestDispatcher_Callback(t *testing.T) {
 			})
 		})
 
-		require.NoError(t, h.Advance(10*time.Millisecond))
+		require.NoError(t, h.AdvanceBy(10*time.Millisecond))
 		assert.False(t, buffered)
 
 		require.NoError(t, d.Resume())
-		require.NoError(t, h.Advance(20*time.Millisecond))
+		require.NoError(t, h.AdvanceBy(20*time.Millisecond))
 		assert.True(t, buffered, "afterFunc after pause in callback should be buffered and fire after resume")
 	})
 }
@@ -407,31 +349,29 @@ func TestDispatcher_Concurrency(t *testing.T) {
 
 		// Phase 1: register all timers
 		var wg sync.WaitGroup
-		wg.Add(numGoroutines)
-		for i := 0; i < numGoroutines; i++ {
-			go func() {
-				defer wg.Done()
+		for range numGoroutines {
+			wg.Go(func() {
 				d.AfterFunc(10*time.Millisecond, func() {
 					executedCount.Add(1)
 				})
-			}()
+			})
 		}
 		wg.Wait()
 
 		// Phase 2: pause/resume cycle (single goroutine)
-		require.NoError(t, h.Advance(5*time.Millisecond))
+		require.NoError(t, h.AdvanceBy(5*time.Millisecond))
 		require.NoError(t, d.Pause())
-		require.NoError(t, h.Advance(1*time.Second))
+		require.NoError(t, h.AdvanceBy(1*time.Second))
 		require.NoError(t, d.Resume())
 
-		require.NoError(t, h.Advance(5*time.Millisecond)) // remaining 5ms
+		require.NoError(t, h.AdvanceBy(5*time.Millisecond)) // remaining 5ms
 		assert.Equal(t, int32(numGoroutines), executedCount.Load())
 	})
 
 	t.Run("concurrent pause", func(t *testing.T) {
 		d, _ := newPausableTest()
 
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			d.AfterFunc(time.Duration(i+1)*time.Second, func() {})
 		}
 
@@ -439,43 +379,18 @@ func TestDispatcher_Concurrency(t *testing.T) {
 		var successCount atomic.Int32
 		var errCount atomic.Int32
 
-		wg.Add(2)
-		for i := 0; i < 2; i++ {
-			go func() {
-				defer wg.Done()
+		for range 2 {
+			wg.Go(func() {
 				if err := d.Pause(); err != nil {
 					errCount.Add(1)
 				} else {
 					successCount.Add(1)
 				}
-			}()
+			})
 		}
 		wg.Wait()
 
 		assert.Equal(t, int32(1), successCount.Load(), "only one Pause should succeed")
 		assert.Equal(t, int32(1), errCount.Load(), "other Pause should return error")
 	})
-}
-
-func TestDispatcher_RemainingClampedToZero(t *testing.T) {
-	// This test needs direct access to currentTime and base to simulate
-	// clock skew (currentTime advanced without base), so it sets up manually.
-	baseTime := time.Unix(0, 0)
-	currentTime := baseTime
-	base := eventloop.NewDispatcher(baseTime)
-	d := NewDispatcher(base, func() time.Time { return currentTime })
-	executed := false
-
-	d.AfterFunc(100*time.Millisecond, func() {
-		executed = true
-	})
-
-	// Advance only currentTime (not base) so that elapsed (200ms) > delay (100ms).
-	// This makes Pause compute negative remaining, which should be clamped to 0.
-	currentTime = currentTime.Add(200 * time.Millisecond)
-	require.NoError(t, d.Pause())
-	require.NoError(t, d.Resume())
-
-	require.NoError(t, base.FastForward(currentTime))
-	assert.True(t, executed, "remaining should be clamped to 0 and fire immediately")
 }

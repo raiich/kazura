@@ -110,9 +110,10 @@ func TestNewGraph(t *testing.T) {
 	})
 
 	t.Run("same state type but not equal", func(t *testing.T) {
+		// Non-zero size, so that two allocations are distinct pointers.
 		type (
-			myState1 struct{ x int }
-			myState2 struct{ y int }
+			myState1 struct{ _ int }
+			myState2 struct{ _ int }
 		)
 
 		_, err := NewGraph(
