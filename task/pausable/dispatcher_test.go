@@ -125,14 +125,14 @@ func TestDispatcher_Pause(t *testing.T) {
 	t.Run("double pause returns error", func(t *testing.T) {
 		d, _ := newPausableTest()
 		require.NoError(t, d.Pause())
-		assert.ErrorContains(t, d.Pause(), "already paused")
+		assert.ErrorIs(t, d.Pause(), ErrPaused)
 	})
 }
 
 func TestDispatcher_Resume(t *testing.T) {
 	t.Run("resume without pause returns error", func(t *testing.T) {
 		d, _ := newPausableTest()
-		assert.ErrorContains(t, d.Resume(), "not paused")
+		assert.ErrorIs(t, d.Resume(), ErrNotPaused)
 	})
 }
 

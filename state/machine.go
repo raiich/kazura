@@ -12,6 +12,7 @@ import (
 
 var (
 	errNilGraph        = errors.New("graph is nil")
+	errNoInitialNode   = errors.New("graph has no initial node")
 	errNotLaunched     = errors.New("machine is not launched")
 	errAlreadyLaunched = errors.New("machine is already launched")
 	errInTransition    = errors.New("machine is in a transition")
@@ -78,10 +79,11 @@ func (m *Machine[S, T]) Value() T {
 // and otherwise the first failure of the chain as [Machine.Trigger] does,
 // leaving the machine where Trigger would.
 func (m *Machine[S, T]) Launch() error {
-	if m.graph == nil || m.graph.InitialNode == nil {
-		return errNilGraph
-	}
 	switch {
+	case m.graph == nil:
+		return errNilGraph
+	case m.graph.InitialNode == nil:
+		return errNoInitialNode
 	case m.callback != callbackKindNone:
 		return errInCallback
 	case m.manager.Get() != nil:

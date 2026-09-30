@@ -3,11 +3,18 @@
 package pausable
 
 import (
-	"fmt"
+	"errors"
 	"sync"
 	"time"
 
 	"github.com/raiich/kazura/task"
+)
+
+var (
+	// ErrPaused reports a [Dispatcher.Pause] while the dispatcher is paused.
+	ErrPaused = errors.New("pausable: already paused")
+	// ErrNotPaused reports a [Dispatcher.Resume] while the dispatcher is not paused.
+	ErrNotPaused = errors.New("pausable: not paused")
 )
 
 // Dispatcher wraps another task.Dispatcher to add Pause / Resume capability.
@@ -64,14 +71,14 @@ func (d *Dispatcher) stop(entry *trackedEntry) bool {
 // Pause suspends the pending timers, so none of them fires until Resume.
 // A timer's remaining duration counts only the time elapsed before Pause (the
 // paused interval is excluded) and is never negative. Timers that have already
-// fired are unaffected. Pause returns an error if the dispatcher is already
+// fired are unaffected. Pause returns [ErrPaused] if the dispatcher is already
 // paused.
 func (d *Dispatcher) Pause() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if d.paused {
-		return fmt.Errorf("already paused")
+		return ErrPaused
 	}
 	d.paused = true
 	pausedAt := d.now()
@@ -88,13 +95,13 @@ func (d *Dispatcher) Pause() error {
 }
 
 // Resume reschedules the suspended timers with their remaining durations.
-// Resume returns an error if the dispatcher is not paused.
+// Resume returns [ErrNotPaused] if the dispatcher is not paused.
 func (d *Dispatcher) Resume() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if !d.paused {
-		return fmt.Errorf("not paused")
+		return ErrNotPaused
 	}
 	d.paused = false
 	resumedAt := d.now()

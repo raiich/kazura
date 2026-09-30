@@ -4,6 +4,7 @@ package state
 
 var (
 	ErrNilGraph             = errNilGraph
+	ErrNoInitialNode        = errNoInitialNode
 	ErrNotLaunched          = errNotLaunched
 	ErrAlreadyLaunched      = errAlreadyLaunched
 	ErrInTransition         = errInTransition

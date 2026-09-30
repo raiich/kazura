@@ -31,7 +31,7 @@ func TestNewMachine(t *testing.T) {
 	t.Run("a graph without an initial node is reported by Launch", func(t *testing.T) {
 		machine := state.NewMachine[State](&graph.Graph[State, reflect.Type]{}, &TestValue{})
 
-		assert.ErrorIs(t, machine.Launch(), state.ErrNilGraph)
+		assert.ErrorIs(t, machine.Launch(), state.ErrNoInitialNode)
 	})
 
 	t.Run("valid graph and value succeeds", func(t *testing.T) {
