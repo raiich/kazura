@@ -16,15 +16,22 @@ import (
 var start = time.Unix(0, 0)
 
 func TestDispatcher(t *testing.T) {
-	tasktest.TestDispatcher(t, func(t *testing.T) (task.Dispatcher, *tasktest.TestHelper) {
-		dispatcher := NewDispatcher(start)
-		return dispatcher, &tasktest.TestHelper{
-			Start: start,
-			AdvanceTo: func(to time.Time) error {
-				return dispatcher.FastForward(to)
-			},
-		}
-	})
+	tasktest.TestDispatcher(t, newTestDispatcher)
+}
+
+func BenchmarkDispatcher(b *testing.B) {
+	tasktest.BenchmarkDispatcher(b, newTestDispatcher)
+}
+
+// newTestDispatcher creates the dispatcher under test, driven by FastForward.
+func newTestDispatcher(testing.TB) (task.Dispatcher, *tasktest.TestHelper) {
+	dispatcher := NewDispatcher(start)
+	return dispatcher, &tasktest.TestHelper{
+		Start: start,
+		AdvanceTo: func(to time.Time) error {
+			return dispatcher.FastForward(to)
+		},
+	}
 }
 
 func TestDispatcher_FastForward(t *testing.T) {

@@ -1,6 +1,7 @@
 package pausable
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,13 +15,43 @@ import (
 )
 
 func TestDispatcher(t *testing.T) {
-	tasktest.TestDispatcher(t, func(t *testing.T) (task.Dispatcher, *tasktest.TestHelper) {
-		d, h := newPausableTest()
-		return d, &tasktest.TestHelper{
-			Start:     h.currentTime,
-			AdvanceTo: h.AdvanceTo,
-		}
-	})
+	tasktest.TestDispatcher(t, newTestDispatcher)
+}
+
+func BenchmarkDispatcher(b *testing.B) {
+	tasktest.BenchmarkDispatcher(b, newTestDispatcher)
+}
+
+// BenchmarkDispatcher_PauseResume measures a Pause followed by a Resume, each of
+// which visits every pending timer.
+func BenchmarkDispatcher_PauseResume(b *testing.B) {
+	for _, pending := range []int{0, 100, 1000} {
+		b.Run(fmt.Sprintf("pending=%d", pending), func(b *testing.B) {
+			d, _ := newPausableTest()
+			for range pending {
+				d.AfterFunc(time.Hour, func() {})
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if err := d.Pause(); err != nil {
+					b.Fatal(err)
+				}
+				if err := d.Resume(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// newTestDispatcher creates the dispatcher under test, driven by the clock of
+// its helper.
+func newTestDispatcher(testing.TB) (task.Dispatcher, *tasktest.TestHelper) {
+	d, h := newPausableTest()
+	return d, &tasktest.TestHelper{
+		Start:     h.currentTime,
+		AdvanceTo: h.AdvanceTo,
+	}
 }
 
 // pausableHelper is the clock the Dispatcher under test reads, backed by a

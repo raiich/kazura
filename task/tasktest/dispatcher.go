@@ -1,5 +1,6 @@
 // Package tasktest provides the conformance tests every [task.Dispatcher]
-// implementation is expected to pass.
+// implementation is expected to pass, and the benchmarks that compare the
+// implementations.
 package tasktest
 
 import (
@@ -31,9 +32,10 @@ func (h *TestHelper) Advance(t *testing.T, sinceStart time.Duration) {
 	require.NoError(t, h.AdvanceTo(h.Start.Add(sinceStart)))
 }
 
-// SetupFunc creates a fresh Dispatcher and TestHelper for a single test case.
-// It is called inside a synctest bubble and may register cleanups via t.Cleanup.
-type SetupFunc func(t *testing.T) (task.Dispatcher, *TestHelper)
+// SetupFunc creates a fresh Dispatcher and TestHelper for a single test case or
+// benchmark. A test case calls it inside a synctest bubble. It may register
+// cleanups via tb.Cleanup.
+type SetupFunc func(tb testing.TB) (task.Dispatcher, *TestHelper)
 
 // run registers body as a subtest named name, running it inside a synctest bubble
 // with a fresh dispatcher from setup.
