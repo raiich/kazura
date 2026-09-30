@@ -130,7 +130,7 @@ func (s InitialState) Entry(machine *EntryMachine, event Event) state.Command {
 
 **Key Points**:
 - Access data via `machine.Value()`
-- What `Entry` receives and what its return value means is the doc of `state.State`
+- See the `state.State` doc for what `Entry` receives and what its return value means
 
 ### State Interface Customization (Optional)
 
@@ -236,7 +236,7 @@ func (s WaitingState) Entry(machine *EntryMachine, event Event) state.Command {
 ```
 
 **Features**:
-- The timer belongs to the visit; cancellation and what the callback may call are the docs of `EntryMachine.AfterFunc` and `AfterFuncMachine`
+- The timer belongs to the visit; see the `EntryMachine.AfterFunc` and `AfterFuncMachine` docs for its cancellation and what the callback may call
 - The callback runs on the `Dispatcher`, serialized with everything else submitted to it
 - In tests, you can advance time with `virtualtime.Dispatcher.FastForward()`
 
@@ -270,7 +270,7 @@ Example: State A → State B → State C, where State B's Entry returns the Trig
 4. Trigger returns
 ```
 
-**Key Point**: What the caller gets when a chained event fails is the doc of `Machine.Trigger`.
+**Key Point**: See the `Machine.Trigger` doc for what the caller gets when a chained event fails.
 
 ### Dispatcher Selection
 
@@ -279,11 +279,14 @@ Choose a Dispatcher based on your state machine use case.
 ```go
 // When you want to control time (games, animation, tests)
 base := virtualtime.NewDispatcher(time.Now())
-must.NoError(base.FastForward(time.Now())) // Call every frame
+var now time.Time
+// Every frame
+now = time.Now()
+must.NoError(base.FastForward(now))
 
 // To suspend the pending timers (e.g. while a game is paused).
-// The clock passed is the one the base is advanced with (time.Now above).
-dispatcher := pausable.NewDispatcher(base, time.Now)
+// The clock passed reads the time the base is advanced to (now above).
+dispatcher := pausable.NewDispatcher(base, func() time.Time { return now })
 must.NoError(dispatcher.Pause())
 must.NoError(dispatcher.Resume())
 ```
@@ -302,7 +305,7 @@ dispatcher.AfterFunc(0, func() {
 })
 ```
 
-The function runs later on the dispatcher, so handle Trigger's error inside it.
+The function runs later on the dispatcher, so Trigger's error is only seen inside it. By then the machine may have moved to a state with no transition for the event; Trigger reports that as an error, and the function decides whether it is one. On a `pausable` dispatcher, a function submitted while paused runs after Resume; submit to the base to reach the machine while paused.
 
 ## Guard Conditions
 
@@ -353,27 +356,14 @@ err := machine.Trigger(&ButtonEvent{Item: "coffee"})
 
 **Key Points**:
 - `OnExit` is registered in each Entry and executed when exiting that state
-- What a `*state.Guarded` does is the doc of `EntryMachine.OnExit`; how the caller receives it, that of `Machine.Trigger`
+- See the `EntryMachine.OnExit` doc for what a `*state.Guarded` does, and the `Machine.Trigger` doc for how the caller receives it
 
 ## Observability
 
 ### Tracing State Transitions
 
 Use `state.WithTracer` to observe every state transition from outside the machine.
-
-```go
-type Tracer[S any] interface {
-    Trace(t Transition[S])
-}
-
-type Transition[S any] struct {
-    From, To S
-    Event    Event
-    Guarded  *Guarded
-}
-```
-
-Pass a `Tracer` implementation when constructing the machine. `%T` prints the
+Pass a `state.Tracer` implementation when constructing the machine. `%T` prints the
 state type name, which is usually more informative than `%v` for logging
 (states with no logging-relevant fields print as `{}` or a bare address
 under `%v`).
@@ -402,7 +392,7 @@ machine := state.NewMachine(stateGraph, &data, state.WithTracer[State](transitio
 `WithTracer` is required because Go cannot infer `S` from the receiver type of
 `transitionLogger.Trace` alone.
 
-**Call Semantics**: when `Trace` is called and what `Transition` carries on `Launch` and `Stop` are the docs of `state.Tracer` and `state.Transition`.
+**Call Semantics**: See the `state.Tracer` and `state.Transition` docs for when `Trace` is called and what `Transition` carries on `Launch` and `Stop`.
 
 **Use Cases**:
 - Structured transition logging without cluttering `Entry` methods
@@ -519,16 +509,7 @@ func (c *Character) Stop() error {
 
 ### Example 1: Vending Machine (vending-machine)
 
-**State Transition Diagram**:
-```mermaid
-stateDiagram-v2
-  [*] --> InitialState
-  InitialState --> WaitingState: CoinEvent
-  PouringState --> InitialState: DoneEvent
-  WaitingState --> InitialState: DoneEvent
-  WaitingState --> PouringState: ButtonEvent
-  WaitingState --> WaitingState: CoinEvent
-```
+The state transition diagram is in the [README](../README.md#1-state-graph-definition).
 
 **Features**:
 - Guard conditions: Block purchase with insufficient funds

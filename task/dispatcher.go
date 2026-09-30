@@ -5,8 +5,6 @@ package task
 import "time"
 
 // Dispatcher defines the interface for scheduling delayed function execution.
-// This abstraction allows working with different timer implementations,
-// including test-friendly dispatchers that can control time simulation.
 //
 // AfterFunc is safe for concurrent use from multiple goroutines.
 type Dispatcher interface {

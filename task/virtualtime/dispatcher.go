@@ -17,6 +17,10 @@ import (
 // ErrRunning reports a [Dispatcher.FastForward] while one runs.
 var ErrRunning = errors.New("virtualtime: FastForward is already running")
 
+// The Dispatcher has no Now. The caller of FastForward owns the clock, so a
+// wrapper that needs the time, such as pausable, takes the caller's clock
+// rather than the simulated one.
+
 // Dispatcher runs the functions submitted to it only while
 // [Dispatcher.FastForward] advances its simulated time.
 type Dispatcher struct {
@@ -35,7 +39,9 @@ type Dispatcher struct {
 // that are scheduled to run during this time period. Useful for game loops
 // and controlled time progression scenarios.
 //
-// A FastForward while one runs returns [ErrRunning].
+// A FastForward while one runs returns [ErrRunning]. When a task panics, the
+// dispatcher stops as [task.Dispatcher.AfterFunc] describes and FastForward
+// returns an error describing the panic.
 func (d *Dispatcher) FastForward(to time.Time) error {
 	if !d.running.CompareAndSwap(false, true) {
 		return ErrRunning

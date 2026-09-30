@@ -12,8 +12,12 @@ import (
 
 // Dispatcher wraps another task.Dispatcher to add Pause / Resume capability.
 type Dispatcher struct {
-	mu      sync.Mutex
-	base    task.Dispatcher
+	mu   sync.Mutex
+	base task.Dispatcher
+	// now is the caller's clock, the one the elapsed time is measured on:
+	// task.Dispatcher offers no clock, and virtualtime keeps its simulated one
+	// private (see its advancedTo). A function the base runs late reads the late
+	// time on it, as a real timer's callback reads the time it runs at.
 	now     func() time.Time
 	paused  bool
 	tracked map[*trackedEntry]struct{}
@@ -112,7 +116,9 @@ func (d *Dispatcher) dispatchEntry(entry *trackedEntry) task.Timer {
 }
 
 // NewDispatcher creates a new Dispatcher that wraps the given base dispatcher.
-// The now function is called to get the current time when pausing and resuming.
+// now reads the clock the base measures delays by, which the caller owns: the
+// time it advances the base to, or time.Now for a base that runs in real time.
+// Pause measures the elapsed part of a timer's delay on that clock.
 func NewDispatcher(base task.Dispatcher, now func() time.Time) *Dispatcher {
 	return &Dispatcher{
 		base:    base,

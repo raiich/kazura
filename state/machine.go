@@ -326,8 +326,8 @@ func (v *stateVisit[T]) afterFunc(d task.Dispatcher, delay time.Duration, f func
 
 // EntryMachine is the machine as seen from Entry, which runs inside a transition
 // and cannot start another one. OnExit and AfterFunc return an error and register
-// nothing once the machine has left the state; until then they are valid inside
-// the exit action of the visit as well.
+// nothing once the machine has left the state; until then AfterFunc is valid
+// inside the exit action of the visit as well.
 type EntryMachine[T any] stateVisit[T]
 
 // Value returns the value the machine carries.
@@ -335,10 +335,10 @@ func (m *EntryMachine[T]) Value() T {
 	return (*stateVisit[T])(m).machine.Value()
 }
 
-// OnExit registers the exit action of this visit, called once when the machine
-// leaves the state with the causing event, or nil on a stop. A *Guarded blocks
-// the transition and keeps the exit action for the next event; a stop cannot be
-// blocked. A second call returns an error and keeps the first.
+// OnExit registers the exit action of this visit, called each time the machine
+// tries to leave the state with the causing event, or nil on a stop. A *Guarded
+// blocks the transition and keeps the exit action for the next event; a stop
+// cannot be blocked. A second call returns an error and keeps the first.
 //
 // A panic in the exit action leaves the machine in the state with the timers of
 // the visit scheduled, and consumes the exit action: a later Stop or transition
