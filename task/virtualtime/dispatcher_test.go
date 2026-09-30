@@ -1,8 +1,10 @@
 package virtualtime
 
 import (
+	"runtime"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/raiich/kazura/task"
 	"github.com/raiich/kazura/task/tasktest"
@@ -70,5 +72,54 @@ func TestDispatcher_FastForward(t *testing.T) {
 		assert.ErrorIs(t, dispatcher.FastForward(start), ErrRunning)
 		close(release)
 		require.NoError(t, <-done)
+	})
+
+	t.Run("reports the panic that stopped the dispatcher again", func(t *testing.T) {
+		dispatcher := NewDispatcher(start)
+		dispatcher.AfterFunc(0, func() { panic("boom") })
+
+		first := dispatcher.FastForward(start)
+		require.ErrorContains(t, first, "panic: boom")
+		assert.Equal(t, first, dispatcher.FastForward(start.Add(time.Hour)), "a later FastForward reports the same error")
+	})
+}
+
+// captureValue returns a function that captures a value and a weak pointer to
+// it. The value is created here so that the calling test's frame holds no
+// reference to it.
+func captureValue() (func(), weak.Pointer[[1 << 20]byte]) {
+	value := new([1 << 20]byte)
+	return func() { _ = value[0] }, weak.Make(value)
+}
+
+func TestDispatcher_ReleasesFunction(t *testing.T) {
+	t.Run("once it ran", func(t *testing.T) {
+		dispatcher := NewDispatcher(start)
+		dispatcher.AfterFunc(time.Hour, func() {}) // keeps the backing array in use
+		f, captured := captureValue()
+		dispatcher.AfterFunc(0, f)
+		f = nil
+
+		require.NoError(t, dispatcher.FastForward(start))
+		runtime.GC()
+		assert.Nil(t, captured.Value(), "the function that ran should be collectable")
+		// Otherwise the dispatcher and its queue are dead before the GC, whatever
+		// the queue retains.
+		runtime.KeepAlive(dispatcher)
+	})
+
+	t.Run("once it was stopped", func(t *testing.T) {
+		dispatcher := NewDispatcher(start)
+		dispatcher.AfterFunc(time.Hour, func() {})
+		f, captured := captureValue()
+		// Due last, so removing it vacates the last slot rather than shifting a
+		// later entry over it.
+		timer := dispatcher.AfterFunc(2*time.Hour, f)
+		f = nil
+
+		require.True(t, timer.Stop())
+		runtime.GC()
+		assert.Nil(t, captured.Value(), "the stopped function should be collectable")
+		runtime.KeepAlive(dispatcher)
 	})
 }

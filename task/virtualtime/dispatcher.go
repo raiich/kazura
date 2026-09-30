@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,7 +31,8 @@ type Dispatcher struct {
 	// advancedTo is the time FastForward has advanced to.
 	advancedTo time.Time
 
-	ended bool
+	// stopErr is the error of the panic that stopped the dispatcher, if any.
+	stopErr error
 	// Ordered list of scheduled tasks (earliest first)
 	tasks []scheduledTask
 }
@@ -41,34 +43,38 @@ type Dispatcher struct {
 //
 // A FastForward while one runs returns [ErrRunning]. When a task panics, the
 // dispatcher stops as [task.Dispatcher.AfterFunc] describes and FastForward
-// returns an error describing the panic.
+// returns an error describing the panic; so does every later FastForward.
 func (d *Dispatcher) FastForward(to time.Time) error {
 	if !d.running.CompareAndSwap(false, true) {
 		return ErrRunning
 	}
 	defer d.running.Store(false)
 	for {
-		head, ok := d.proceedAndDequeue(to)
-		if !ok {
+		head, err := d.proceedAndDequeue(to)
+		if err != nil {
+			return err
+		}
+		if head == nil {
 			return nil
 		}
 		if err := head.run(); err != nil {
-			d.shutdown()
+			d.shutdown(err)
 			return err
 		}
 	}
 }
 
 // proceedAndDequeue advances time and dequeues the next task if available.
-// Returns the next task and whether one was due by end.
-func (d *Dispatcher) proceedAndDequeue(end time.Time) (*pendingTask, bool) {
+// Returns the next task, nil once none is due by end, or the error the
+// dispatcher stopped with.
+func (d *Dispatcher) proceedAndDequeue(end time.Time) (*pendingTask, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// A shut-down dispatcher runs nothing further. Queued tasks stay so a
+	// A stopped dispatcher runs nothing further. Queued tasks stay so a
 	// Timer.Stop can still cancel them, but they never execute.
-	if d.ended {
-		return nil, false
+	if d.stopErr != nil {
+		return nil, d.stopErr
 	}
 
 	head, ok := d.dequeue(end)
@@ -77,9 +83,9 @@ func (d *Dispatcher) proceedAndDequeue(end time.Time) (*pendingTask, bool) {
 			// No more tasks before end time, advance to end
 			d.advancedTo = end
 		}
-		return nil, false
+		return nil, nil
 	}
-	return head, true
+	return head, nil
 }
 
 // dequeue removes and returns the earliest scheduled task if it should execute before end time.
@@ -88,25 +94,27 @@ func (d *Dispatcher) dequeue(end time.Time) (*pendingTask, bool) {
 	if len(d.tasks) == 0 {
 		return nil, false
 	}
-	head, tail := d.tasks[0], d.tasks[1:]
+	head := d.tasks[0]
 	// Check if the earliest task should execute after the end time
 	if end.Before(head.at) {
 		return nil, false
 	}
-	// Remove the task from the queue
-	d.tasks = tail
+	// Remove the task from the queue. The slot is cleared so the function is
+	// not retained until the backing array is reallocated.
+	d.tasks[0] = scheduledTask{}
+	d.tasks = d.tasks[1:]
 	// Advance time to the task's scheduled time
 	d.advancedTo = head.at
 	return head.task, true
 }
 
-func (d *Dispatcher) shutdown() {
+func (d *Dispatcher) shutdown(err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	// Queued tasks stay (not removed) so a Timer.Stop still reports it prevented
-	// execution; the ended gate keeps them from running.
-	d.ended = true
+	// execution; stopErr keeps them from running.
+	d.stopErr = err
 }
 
 // AfterFunc schedules f to run once the simulated time has advanced by duration.
@@ -159,8 +167,8 @@ func (d *Dispatcher) dropTask(task *pendingTask) bool {
 
 	for i, e := range d.tasks {
 		if e.task == task {
-			// Remove the task by slicing around it
-			d.tasks = append(d.tasks[:i], d.tasks[i+1:]...)
+			// slices.Delete clears the vacated slot, so the function is not retained.
+			d.tasks = slices.Delete(d.tasks, i, i+1)
 			return true
 		}
 	}
