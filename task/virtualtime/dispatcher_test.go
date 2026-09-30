@@ -74,6 +74,30 @@ func TestDispatcher_FastForward(t *testing.T) {
 		require.NoError(t, <-done)
 	})
 
+	t.Run("AfterFunc from another goroutine while running", func(t *testing.T) {
+		dispatcher := NewDispatcher(start)
+
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		var order []int
+		dispatcher.AfterFunc(10*time.Millisecond, func() {
+			order = append(order, 1)
+			close(entered)
+			<-release
+		})
+		dispatcher.AfterFunc(20*time.Millisecond, func() { order = append(order, 3) })
+
+		done := make(chan error, 1)
+		go func() { done <- dispatcher.FastForward(start.Add(20 * time.Millisecond)) }()
+		<-entered
+		// Relative to the time of the running function (10ms), so due at 15ms:
+		// within this FastForward and before the 20ms function.
+		dispatcher.AfterFunc(5*time.Millisecond, func() { order = append(order, 2) })
+		close(release)
+		require.NoError(t, <-done)
+		assert.Equal(t, []int{1, 2, 3}, order)
+	})
+
 	t.Run("reports the panic that stopped the dispatcher again", func(t *testing.T) {
 		dispatcher := NewDispatcher(start)
 		dispatcher.AfterFunc(0, func() { panic("boom") })

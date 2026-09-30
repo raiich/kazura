@@ -71,27 +71,17 @@ func TestDispatcher(t *testing.T, setup SetupFunc) {
 }
 
 func testAfterFunc(t *testing.T, setup SetupFunc) {
-	run(t, setup, "executes once", func(t *testing.T, d task.Dispatcher, h *TestHelper) {
+	run(t, setup, "executes once at exactly its delay", func(t *testing.T, d task.Dispatcher, h *TestHelper) {
 		var actual atomic.Int32
 		d.AfterFunc(5*time.Millisecond, func() {
 			actual.Add(1)
 		})
+		h.Advance(t, 5*time.Millisecond-1)
+		assert.Equal(t, int32(0), actual.Load(), "should not fire before its delay")
 		h.Advance(t, 5*time.Millisecond)
-		assert.Equal(t, int32(1), actual.Load())
+		assert.Equal(t, int32(1), actual.Load(), "should fire at exactly its delay")
 		h.Advance(t, 55*time.Millisecond)
 		assert.Equal(t, int32(1), actual.Load(), "function should execute exactly once")
-	})
-
-	run(t, setup, "does not fire before delay elapses but fires at exact delay", func(t *testing.T, d task.Dispatcher, h *TestHelper) {
-		var actual atomic.Bool
-		d.AfterFunc(100*time.Millisecond, func() {
-			actual.Store(true)
-		})
-		h.Advance(t, 99*time.Millisecond)
-		assert.False(t, actual.Load(), "should not fire at delay-1")
-
-		h.Advance(t, 100*time.Millisecond)
-		assert.True(t, actual.Load(), "should fire at exact delay")
 	})
 
 	run(t, setup, "zero duration", func(t *testing.T, d task.Dispatcher, h *TestHelper) {
@@ -170,24 +160,22 @@ func testAfterFunc(t *testing.T, setup SetupFunc) {
 		assert.Equal(t, int32(5), actual.Load(), "counter should be 5 (sequential execution, no race conditions)")
 	})
 
-	run(t, setup, "afterFunc from within callback", func(t *testing.T, d task.Dispatcher, h *TestHelper) {
-		const (
-			bit1 = 1 << iota
-			bit2
-		)
+	run(t, setup, "runs in the order the delays elapse within one advance", func(t *testing.T, d task.Dispatcher, h *TestHelper) {
+		// Each function appends its digit, so the value reads as the order they ran in.
 		var v int32
 		var actual atomic.Int32
+		d.AfterFunc(20*time.Millisecond, func() { v = v*10 + 4; actual.Store(v) })
+		d.AfterFunc(12*time.Millisecond, func() { v = v*10 + 2; actual.Store(v) })
 		d.AfterFunc(10*time.Millisecond, func() {
-			v |= bit1
+			v = v*10 + 1
 			actual.Store(v)
-			d.AfterFunc(20*time.Millisecond, func() {
-				v |= bit2
-				actual.Store(v)
-			})
+			// Due at 15ms: relative to the time this function runs at, neither to
+			// the time the advance started from nor to the time it is heading to.
+			d.AfterFunc(5*time.Millisecond, func() { v = v*10 + 3; actual.Store(v) })
 		})
 
-		h.Advance(t, 30*time.Millisecond)
-		assert.Equal(t, int32(bit1|bit2), actual.Load(), "both callbacks should have fired")
+		h.Advance(t, 20*time.Millisecond)
+		assert.Equal(t, int32(1234), actual.Load())
 	})
 
 	run(t, setup, "afterFunc after time advanced uses relative delay", func(t *testing.T, d task.Dispatcher, h *TestHelper) {
@@ -207,16 +195,6 @@ func testAfterFunc(t *testing.T, setup SetupFunc) {
 }
 
 func testTimerStop(t *testing.T, setup SetupFunc) {
-	run(t, setup, "before execution", func(t *testing.T, d task.Dispatcher, h *TestHelper) {
-		var actual atomic.Bool
-		timer := d.AfterFunc(20*time.Millisecond, func() {
-			actual.Store(true)
-		})
-		assert.True(t, timer.Stop(), "Stop() should return true when stopping before execution")
-		h.Advance(t, 50*time.Millisecond)
-		assert.False(t, actual.Load(), "function should not execute after being stopped")
-	})
-
 	run(t, setup, "after execution", func(t *testing.T, d task.Dispatcher, h *TestHelper) {
 		var actual atomic.Int32
 		timer := d.AfterFunc(1*time.Millisecond, func() {
@@ -251,6 +229,25 @@ func testTimerStop(t *testing.T, setup SetupFunc) {
 		h.Advance(t, 500*time.Millisecond)
 		assert.True(t, stopResult.Load(), "Stop() from callback should return true")
 		assert.False(t, targetExecuted.Load(), "stopped timer should not execute")
+	})
+
+	run(t, setup, "stop from callback of a timer due at the same time", func(t *testing.T, d task.Dispatcher, h *TestHelper) {
+		// Which of two timers with the same delay runs first is unspecified, so each
+		// stops the other: the one that runs finds the other's delay elapsed but its
+		// function not yet run, which Stop still prevents. Both are scheduled from a
+		// function so that their handles are written before either callback reads them.
+		var ran atomic.Int32
+		var stopped atomic.Bool
+		d.AfterFunc(0, func() {
+			var a, b task.Timer
+			a = d.AfterFunc(10*time.Millisecond, func() { ran.Add(1); stopped.Store(b.Stop()) })
+			b = d.AfterFunc(10*time.Millisecond, func() { ran.Add(1); stopped.Store(a.Stop()) })
+		})
+		h.Advance(t, 10*time.Millisecond)
+		assert.Equal(t, int32(1), ran.Load(), "only the first of the two to run should run")
+		assert.True(t, stopped.Load(), "Stop should report it prevented the other, whose delay had elapsed")
+		h.Advance(t, 50*time.Millisecond)
+		assert.Equal(t, int32(1), ran.Load(), "the stopped function never runs")
 	})
 
 	run(t, setup, "stopping one timer does not affect others", func(t *testing.T, d task.Dispatcher, h *TestHelper) {

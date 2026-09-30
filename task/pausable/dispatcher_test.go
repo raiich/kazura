@@ -88,21 +88,7 @@ func TestTimer_Stop(t *testing.T) {
 }
 
 func TestDispatcher_Pause(t *testing.T) {
-	t.Run("stops all timers", func(t *testing.T) {
-		d, h := newPausableTest()
-		executed := false
-
-		d.AfterFunc(10*time.Second, func() {
-			executed = true
-		})
-
-		require.NoError(t, h.AdvanceBy(3*time.Second))
-		require.NoError(t, d.Pause())
-		require.NoError(t, h.AdvanceBy(100*time.Second))
-		assert.False(t, executed)
-	})
-
-	t.Run("already fired timers are unaffected", func(t *testing.T) {
+	t.Run("stops the pending timers and leaves the fired ones", func(t *testing.T) {
 		d, h := newPausableTest()
 		f1Executed := false
 		f2Executed := false
@@ -259,24 +245,35 @@ func TestDispatcher_Remaining(t *testing.T) {
 	})
 
 	t.Run("clamped to zero", func(t *testing.T) {
-		d, h := newPausableTest()
-		executed := false
+		// A base treats a negative delay as zero itself, so the clamp is observable
+		// only through the delay handed to the base.
+		base := &recordingBase{}
+		now := time.Unix(0, 0)
+		d := NewDispatcher(base, func() time.Time { return now })
+		d.AfterFunc(100*time.Millisecond, func() {})
 
-		d.AfterFunc(100*time.Millisecond, func() {
-			executed = true
-		})
-
-		// Skew the clock: advance only currentTime (not base) so that elapsed (200ms)
-		// > delay (100ms). This makes Pause compute negative remaining, which should
-		// be clamped to 0.
-		h.currentTime = h.currentTime.Add(200 * time.Millisecond)
+		// Skew the clock so that elapsed (200ms) > delay (100ms).
+		now = now.Add(200 * time.Millisecond)
 		require.NoError(t, d.Pause())
 		require.NoError(t, d.Resume())
-
-		require.NoError(t, h.AdvanceBy(0))
-		assert.True(t, executed, "remaining should be clamped to 0 and fire immediately")
+		assert.Equal(t, []time.Duration{100 * time.Millisecond, 0}, base.delays)
 	})
 }
+
+// recordingBase records the delay of each AfterFunc. Its functions never run
+// and its timers are always pending.
+type recordingBase struct {
+	delays []time.Duration
+}
+
+func (b *recordingBase) AfterFunc(delay time.Duration, _ func()) task.Timer {
+	b.delays = append(b.delays, delay)
+	return pendingTimer{}
+}
+
+type pendingTimer struct{}
+
+func (pendingTimer) Stop() bool { return true }
 
 func TestDispatcher_AfterFuncDuringPause(t *testing.T) {
 	t.Run("fires with full delay after resume", func(t *testing.T) {
@@ -290,9 +287,11 @@ func TestDispatcher_AfterFuncDuringPause(t *testing.T) {
 
 		require.NoError(t, h.AdvanceBy(50*time.Second))
 		require.NoError(t, d.Resume())
-		assert.False(t, executed)
 
-		require.NoError(t, h.AdvanceBy(5*time.Second))
+		require.NoError(t, h.AdvanceBy(5*time.Second-1))
+		assert.False(t, executed, "should not fire before the full delay from resume")
+
+		require.NoError(t, h.AdvanceBy(1))
 		assert.True(t, executed)
 	})
 }
@@ -338,6 +337,45 @@ func TestDispatcher_Callback(t *testing.T) {
 		require.NoError(t, d.Resume())
 		require.NoError(t, h.AdvanceBy(20*time.Millisecond))
 		assert.True(t, buffered, "afterFunc after pause in callback should be buffered and fire after resume")
+	})
+
+	t.Run("pause from a callback measures the elapsed time on the caller's clock", func(t *testing.T) {
+		d, h := newPausableTest()
+		executed := false
+
+		d.AfterFunc(10*time.Millisecond, func() { require.NoError(t, d.Pause()) })
+		d.AfterFunc(50*time.Millisecond, func() { executed = true })
+
+		// The clock reads 100ms while the 10ms callback runs, so the 50ms timer
+		// has no time left when it is paused.
+		require.NoError(t, h.AdvanceBy(100*time.Millisecond))
+		assert.False(t, executed, "the pause holds the 50ms timer")
+
+		require.NoError(t, d.Resume())
+		require.NoError(t, h.AdvanceBy(0))
+		assert.True(t, executed, "should fire as soon as resumed")
+	})
+
+	t.Run("afterFunc from a callback counts its elapsed time on the caller's clock", func(t *testing.T) {
+		d, h := newPausableTest()
+		executed := false
+
+		d.AfterFunc(10*time.Millisecond, func() {
+			d.AfterFunc(200*time.Millisecond, func() { executed = true })
+		})
+
+		// Registered while the clock reads 100ms, so nothing has elapsed on it at
+		// the pause in the same tick.
+		require.NoError(t, h.AdvanceBy(100*time.Millisecond))
+		require.NoError(t, d.Pause())
+		require.NoError(t, h.AdvanceBy(time.Second))
+		require.NoError(t, d.Resume())
+
+		require.NoError(t, h.AdvanceBy(200*time.Millisecond-1))
+		assert.False(t, executed, "should not fire before the full delay from resume")
+
+		require.NoError(t, h.AdvanceBy(1))
+		assert.True(t, executed, "should fire at the full delay from resume")
 	})
 }
 
